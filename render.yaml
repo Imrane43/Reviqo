@@ -1,0 +1,64 @@
+services:
+  - type: web
+    name: reviqo
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run check
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: APP_ORIGIN
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: DB_PATH
+        value: ./data/reviqo.db
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_MONTHLY
+        value: price_1UK1fI135y6qw8XWu5M2rbpY
+      - key: STRIPE_PRICE_YEARLY
+        value: price_1UK1gE135y6qw8XWjySyztec
+      - key: STRIPE_LINK_MONTHLY
+        value: https://buy.stripe.com/aFa4grauo6UnduBh1D8N202
+      - key: STRIPE_LINK_YEARLY
+        value: https://buy.stripe.com/8x28wH5a4baDeyFbHj8N204
+      - key: STRIPE_MODE
+        value: ""
+      - key: BILLING_GRACE_DAYS
+        value: "3"
+      - key: COACH_DAILY_LIMIT
+        value: "200"
+      - key: YOUTUBE_API_KEY
+        sync: false
+      - key: VIDEO_DAILY_LIMIT
+        value: "60"
+      - key: VIDEO_CACHE_TTL_HOURS
+        value: "168"
+      - key: VIDEO_AI_API_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      # Email provider for verification codes / password reset (choose one).
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SMTP_URL
+        sync: false
+      - key: MAIL_FROM_EMAIL
+        value: no-reply@reviqo.app
+      # Empty = enforce verification in production only when a mail provider is set.
+      - key: REQUIRE_EMAIL_VERIFICATION
+        value: ""

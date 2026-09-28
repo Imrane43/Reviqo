@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Contact · REVIQO</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+<header class="site-header"><div class="wrap-page"><a class="brand" href="/"><span class="brand-mark">R</span> REVIQO</a><nav class="nav-links"><a href="/#features">Fonctionnalités</a><a href="/#pricing">Tarifs</a><a class="btn btn-primary btn-sm" href="/auth.html#signup">Commencer</a></nav></div></header>
+<main class="wrap-page" style="max-width:620px;padding:52px 20px 90px">
+  <h1>Contact</h1>
+  <p>Une question, un bug, une idée ? Écris-nous, on lit tout.</p>
+  <div class="card">
+    <div class="field"><label for="c-name">Nom</label><input class="input" id="c-name" placeholder="Ton nom" /></div>
+    <div class="field"><label for="c-email">E-mail</label><input class="input" id="c-email" type="email" placeholder="toi@exemple.com" /></div>
+    <div class="field"><label for="c-msg">Message</label><textarea class="textarea" id="c-msg" placeholder="Ton message…"></textarea></div>
+    <button class="btn btn-primary" id="sendContact">Envoyer</button>
+    <p class="form-note mt2">Support : <b>support@reviqo.app</b></p>
+  </div>
+  <a class="btn btn-outline mt3" href="/">← Retour à l’accueil</a>
+</main>
+<script type="module">
+  import { toast, initTheme } from '/js/api.js';
+  initTheme();
+  document.getElementById('sendContact').addEventListener('click', () => {
+    const msg = document.getElementById('c-msg').value.trim();
+    if (!msg) return toast('Écris ton message.', 'error');
+    toast('Merci ! Ton message a bien été pris en compte.', 'success');
+    document.getElementById('c-msg').value = '';
+  });
+</script>
+</body>
+</html>

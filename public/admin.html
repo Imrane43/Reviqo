@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>REVIQO Admin</title>
+<meta name="robots" content="noindex" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="/css/app.css" />
+<script>document.documentElement.classList.add('js');</script>
+</head>
+<body>
+<div class="mobile-top">
+  <a class="brand" href="/app.html"><span class="brand-mark">R</span> Admin</a>
+  <div class="row" style="gap:8px"><a class="btn btn-outline btn-sm" href="/app.html">← App</a><button class="icon-btn" id="themeBtn">🌙</button></div>
+</div>
+<div class="app-shell">
+  <aside class="sidebar">
+    <a class="brand" href="/admin.html"><span class="brand-mark">R</span> Admin</a>
+    <nav id="adminNav"></nav>
+    <div class="sidebar-foot"><div class="mini-user" id="adminUser"></div><a class="btn btn-outline btn-sm" href="/app.html">← Retour à l’app</a></div>
+  </aside>
+  <main class="main">
+    <div class="topbar"><div><div class="faint" id="pageEyebrow" style="font-size:.76rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase">Administration</div><h1 id="pageTitle">Statistiques</h1></div></div>
+    <div id="view"></div>
+  </main>
+</div>
+<div id="modalHost"></div>
+<div class="toast-host"></div>
+<script type="module" src="/js/admin.js"></script>
+</body>
+</html>

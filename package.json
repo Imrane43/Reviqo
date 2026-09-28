@@ -1,0 +1,29 @@
+{
+  "name": "reviqo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "REVIQO - Learn. Play. Master. A full-stack study + gamification platform.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "check": "node scripts/check-server-imports.js",
+    "seed": "node scripts/seed.js",
+    "test": "node scripts/run-tests.js",
+    "e2e": "node scripts/e2e.js"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.2",
+    "nodemailer": "^6.9.16",
+    "jsonwebtoken": "^9.0.2",
+    "stripe": "^17.5.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.1"
+  }
+}

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Politique cookies · REVIQO</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+<header class="site-header"><div class="wrap-page"><a class="brand" href="/"><span class="brand-mark">R</span> REVIQO</a><nav class="nav-links"><a href="/">Accueil</a><a class="btn btn-primary btn-sm" href="/auth.html#signup">Commencer</a></nav></div></header>
+<main class="wrap-page" style="max-width:760px;padding:52px 20px 90px">
+  <h1>Politique de cookies</h1>
+  <p class="faint">Nous utilisons le strict nécessaire, et rien d’autre sans ton accord.</p>
+  <div class="grid g2 mt3">
+    <div class="card"><h3>🍪 Essentiels</h3><p>Toujours actifs. Session, sécurité, préférence de thème, consentement. Pas de traçage publicitaire.</p></div>
+    <div class="card"><h3>📊 Mesure</h3><p>Optionnels. Statistiques agrégées pour améliorer le produit. Refusables.</p></div>
+    <div class="card"><h3>📣 Publicité</h3><p>Optionnels. Publicités non personnalisées pour les utilisateurs gratuits. Jamais de pub pendant une question de quiz.</p></div>
+    <div class="card"><h3>🔞 Mineurs</h3><p>Pas de publicité personnalisée pour les mineurs. Consentement adapté requis selon le pays.</p></div>
+  </div>
+  <div class="card mt3"><b>Gérer mes préférences</b><p class="form-note mt1">Tu peux modifier tes choix à tout moment depuis les paramètres de ton profil, ou via la bannière de consentement.</p><button class="btn btn-outline btn-sm mt1" id="resetConsent">Réinitialiser mon consentement</button></div>
+  <a class="btn btn-outline mt3" href="/">← Retour</a>
+</main>
+<script type="module">
+  import { initTheme, toast } from '/js/api.js';
+  initTheme();
+  document.getElementById('resetConsent').addEventListener('click', () => {
+    localStorage.removeItem('reviqo-consent');
+    toast('Consentement réinitialisé. Recharge l’accueil.', 'info');
+  });
+</script>
+</body>
+</html>
