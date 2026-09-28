@@ -137,7 +137,7 @@ export function getUserFromReq(req) {
   try {
     const payload = jwt.verify(token, JWT_SECRET);
     const user = getDb().prepare('SELECT * FROM users WHERE id = ?').get(payload.id);
-    if (!user) return null;
+    if (!user || user.deleted_at) return null;
     // Reject tokens issued before the last revocation (ban, password reset).
     if ((payload.tv || 0) !== (user.token_version || 0)) return null;
     return user;

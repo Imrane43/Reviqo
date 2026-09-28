@@ -822,4 +822,155 @@ export async function run({ base, assert }) {
   assert((await req(`/api/teams/challenges/${propose.data.id}/finalize`, { method: 'POST', session: t1 })).data.idempotent === true, 'clôture idempotente (rejouer ne change pas le résultat)');
   assert((await req('/api/teams/challenges/list', { session: t1 })).data.challenges.length >= 1, 'historique des défis disponible');
   void t3;
+
+  console.log('— pubs, révisions, carnet, planning, tableau de bord, recherche, favoris, notifications (étape 11) —');
+  const sId = (await req('/api/me', { session: s })).data.user.id;
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  const adsFree = await req('/api/ads/config', { session: s });
+  assert(adsFree.data.show === true && adsFree.data.neverShowForPremium === true && adsFree.data.slots.length >= 1, 'publicités servies uniquement aux comptes gratuits');
+  assert(/annonceurs|Coach/i.test(adsFree.data.policy || ''), 'politique : aucune donnée du Coach/résultats transmise aux annonceurs');
+  assert((await req('/api/ads/config', { session: admin })).data.show === false, 'aucune publicité pour un compte premium/admin');
+  await req('/api/admin/ads/global', { method: 'POST', body: { enabled: false }, session: admin });
+  assert((await req('/api/ads/config', { session: s })).data.show === false, 'désactivation globale des publicités (config serveur)');
+  await req('/api/admin/ads/global', { method: 'POST', body: { enabled: true }, session: admin });
+
+  const deck0 = (await req('/api/flashcards', { session: s })).data.decks[0];
+  const cardId = deck0.cards[0].id;
+  const rev1 = await req(`/api/reviews/${cardId}`, { method: 'POST', body: { rating: 'good' }, session: s });
+  assert(rev1.status === 200 && rev1.data.interval_days === 1 && !!rev1.data.dueDate, 'révision « Bien » programmée (intervalle 1 jour)');
+  const rev2 = await req(`/api/reviews/${cardId}`, { method: 'POST', body: { rating: 'good' }, session: s });
+  assert(rev2.data.interval_days === 6, 'deuxième « Bien » → 6 jours (intervalles croissants)');
+  const revEasy = await req(`/api/reviews/${cardId}`, { method: 'POST', body: { rating: 'easy' }, session: s });
+  assert(revEasy.data.interval_days > 6, '« Facile » allonge davantage l’intervalle');
+  const revAgain = await req(`/api/reviews/${cardId}`, { method: 'POST', body: { rating: 'again' }, session: s });
+  assert(revAgain.data.interval_days === 1 && revAgain.data.lapses >= 1, '« À revoir » remet l’intervalle à 1 et compte un oubli');
+  assert((await req(`/api/reviews/${cardId}`, { method: 'POST', body: { rating: 'nope' }, session: s })).status === 400, 'note de révision invalide refusée');
+  const rstats = await req('/api/reviews/stats', { session: s });
+  assert(rstats.data.tracked >= 1 && typeof rstats.data.due === 'number', 'statistiques de révision disponibles');
+  getDbT().prepare('UPDATE flashcard_reviews SET due_date = ? WHERE user_id = ? AND flashcard_id = ?').run(todayStr, sId, cardId);
+  assert((await req('/api/reviews/due', { session: s })).data.due.some((c) => c.id === cardId), 'les cartes dues du jour sont listées');
+
+  const quizN = (await req('/api/quizzes')).data.quizzes.find((x) => !x.isPremium);
+  const ansN = new Array(quizN.questionCount).fill(0);
+  await req(`/api/quizzes/${quizN.id}/attempt`, { method: 'POST', body: { answers: ansN, attemptId: 'notebook-1' }, session: s });
+  const nb1 = (await req('/api/error-notebook', { session: s })).data;
+  assert(nb1.total >= 1 && nb1.groups.length >= 1, 'carnet d’erreurs alimenté par les réponses fausses');
+  await req(`/api/quizzes/${quizN.id}/attempt`, { method: 'POST', body: { answers: ansN, attemptId: 'notebook-2' }, session: s });
+  assert((await req('/api/error-notebook', { session: s })).data.total === nb1.total, 'aucune duplication d’erreur pour la même question');
+  const errorId = nb1.groups[0].entries[0].id;
+  await req(`/api/error-notebook/${errorId}/resolve`, { method: 'POST', session: s });
+  assert((await req('/api/error-notebook', { session: s })).data.total === nb1.total - 1, 'résolution d’une erreur du carnet');
+
+  const examDate = new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10);
+  const plan = await req('/api/planner', { method: 'POST', body: { examDate, minutesPerDay: 45, subjects: [1, 2] }, session: s });
+  assert(plan.status === 200 && plan.data.plan.days.length >= 1 && plan.data.plan.minutesPerDay === 45, 'planning de révision généré (date d’examen + temps disponible)');
+  assert((await req('/api/planner', { session: s })).data.plan.examDate === examDate, 'planning récupérable et recalculable');
+
+  const dash = await req('/api/dashboard', { session: s });
+  assert(dash.status === 200 && dash.data.revisions && typeof dash.data.notebook.unresolved === 'number' && dash.data.mastery, 'tableau de bord agrégé (révisions, erreurs, maîtrise)');
+
+  const search = await req('/api/search?q=fraction');
+  assert(search.status === 200 && search.data.results.length >= 1, 'recherche globale (quiz et flashcards)');
+  assert((await req('/api/search?q=a')).data.results.length === 0, 'requête trop courte ignorée');
+  assert((await req('/api/search?q=fraction&subject=maths')).data.results.every((x) => x.subject.slug === 'maths'), 'recherche filtrée par matière');
+  assert((await req('/api/search?q=fraction', { session: freeCoach })).data.results.every((x) => !x.isPremium), 'recherche : contenu premium exclu pour un compte gratuit');
+
+  const fav = await req('/api/favorites', { method: 'POST', body: { targetType: 'quiz', targetId: '1', note: 'À revoir' }, session: s });
+  assert(fav.status === 201, 'ajout d’un favori avec note privée');
+  const favList = await req('/api/favorites', { session: s });
+  assert(favList.data.favorites.some((f) => f.target_type === 'quiz' && f.note === 'À revoir'), 'favori listé avec sa note');
+  assert(!(await req('/api/favorites', { session: freeCoach })).data.favorites.some((f) => f.note === 'À revoir'), 'les favoris/notes sont privés');
+  const favId = favList.data.favorites.find((f) => f.note === 'À revoir').id;
+  await req(`/api/favorites/${favId}`, { method: 'DELETE', session: s });
+  assert(!(await req('/api/favorites', { session: s })).data.favorites.some((f) => f.id === favId), 'suppression d’un favori');
+
+  // Notifications : préférences, heures silencieuses, défi d’équipe
+  assert((await req('/api/notifications', { session: t4 })).data.notifications.some((n) => n.type === 'team'), 'défi d’équipe → notification de l’équipe adverse');
+  const nB = jar();
+  await req('/api/auth/signup', { method: 'POST', body: { email: 'notifB@example.com', password: 'secret123', username: 'NotifB' }, session: nB });
+  await req('/api/notifications/prefs', { method: 'PATCH', body: { prefs: { friend: false } }, session: nB });
+  const nA1 = jar();
+  await req('/api/auth/signup', { method: 'POST', body: { email: 'notifA1@example.com', password: 'secret123', username: 'NotifA1' }, session: nA1 });
+  await req('/api/friends/request', { method: 'POST', body: { email: 'notifB@example.com' }, session: nA1 });
+  assert(!(await req('/api/notifications', { session: nB })).data.notifications.some((n) => n.type === 'friend'), 'type de notification désactivé → aucune notification');
+
+  const nowH = new Date().getUTCHours();
+  const quietStart = `${String((nowH + 23) % 24).padStart(2, '0')}:00`;
+  const quietEnd = `${String((nowH + 1) % 24).padStart(2, '0')}:00`;
+  await req('/api/notifications/prefs', { method: 'PATCH', body: { prefs: { friend: true }, quietStart, quietEnd, frequency: 'daily' }, session: nB });
+  assert((await req('/api/notifications/prefs', { session: nB })).data.frequency === 'daily', 'fréquence de notification configurable');
+  const nA2 = jar();
+  await req('/api/auth/signup', { method: 'POST', body: { email: 'notifA2@example.com', password: 'secret123', username: 'NotifA2' }, session: nA2 });
+  await req('/api/friends/request', { method: 'POST', body: { email: 'notifB@example.com' }, session: nA2 });
+  assert(!(await req('/api/notifications', { session: nB })).data.notifications.some((n) => n.type === 'friend'), 'heures silencieuses respectées');
+
+  await req('/api/notifications/prefs', { method: 'PATCH', body: { quietStart: '00:00', quietEnd: '00:00' }, session: nB });
+  const nA3 = jar();
+  await req('/api/auth/signup', { method: 'POST', body: { email: 'notifA3@example.com', password: 'secret123', username: 'NotifA3' }, session: nA3 });
+  await req('/api/friends/request', { method: 'POST', body: { email: 'notifB@example.com' }, session: nA3 });
+  assert((await req('/api/notifications', { session: nB })).data.notifications.some((n) => n.type === 'friend'), 'notification reçue hors heures silencieuses');
+
+  console.log('— sécurité, confidentialité, admin, accessibilité (étape 12) —');
+  const priv = jar();
+  await req('/api/auth/signup', { method: 'POST', body: { email: 'privacy@example.com', password: 'secret123', username: 'Privacy' }, session: priv });
+  await req('/api/favorites', { method: 'POST', body: { targetType: 'quiz', targetId: '1', note: 'privé' }, session: priv });
+  const exp = await req('/api/me/export', { session: priv });
+  assert(exp.status === 200 && exp.data.profile.email === 'privacy@example.com' && Array.isArray(exp.data.favorites), 'export des données personnelles');
+  assert(!/password_hash|coach_api_key|reset_hash|verify_hash|google_id/.test(JSON.stringify(exp.data)), 'l’export n’expose aucun secret');
+  const del = await req('/api/me', { method: 'DELETE', session: priv });
+  assert(del.status === 200 && del.data.deleted === true, 'suppression de compte (anonymisation, facturation conservée)');
+  assert((await req('/api/me', { session: priv })).status === 401, 'sessions révoquées après suppression');
+  assert((await req('/api/auth/login', { method: 'POST', body: { email: 'privacy@example.com', password: 'secret123' } })).status === 401, 'compte supprimé : connexion impossible');
+  assert((await req('/api/me', { method: 'DELETE', session: admin })).status === 400, 'un admin ne peut pas se supprimer depuis l’application');
+
+  const diag = await req('/api/admin/diagnostics', { session: admin });
+  assert(diag.status === 200 && diag.data.mail && diag.data.stripe && typeof diag.data.counts.pendingReports === 'number', 'diagnostics admin (email, Stripe, compteurs)');
+  assert((await req('/api/admin/diagnostics', { session: s })).status === 403, 'diagnostics réservés aux admins');
+  const curs = await req('/api/admin/curricula', { session: admin });
+  assert(curs.status === 200 && curs.data.curricula.length >= 1, 'gestion des programmes (pays/niveau/année)');
+  const cur6 = curs.data.curricula.find((c) => c.grade === '6eme');
+  assert((await req(`/api/admin/curricula/${cur6.id}`, { method: 'PATCH', body: { contentStatus: 'published', session: '2026' }, session: admin })).data.contentStatus === 'published', 'statut de contenu d’un programme modifiable');
+  assert((await req(`/api/admin/curricula/${cur6.id}`, { method: 'PATCH', body: { contentStatus: 'nope' }, session: admin })).status === 400, 'statut de contenu invalide refusé');
+  await req(`/api/admin/curricula/${cur6.id}`, { method: 'PATCH', body: { contentStatus: 'partial' }, session: admin });
+  const preview = await req('/api/admin/preview-program', { method: 'POST', body: { country: 'France', schoolLevel: 'Collège', grade: '3eme' }, session: admin });
+  assert(preview.status === 200 && preview.data.examTabs[0]?.label === 'Révisions Brevet' && typeof preview.data.classContentCount === 'number', 'prévisualisation d’un profil scolaire sans usurpation de compte');
+  await req('/api/reports', { method: 'POST', body: { targetType: 'quiz', targetId: '1', reason: 'test' }, session: s });
+  const openRep = (await req('/api/admin/reports', { session: admin })).data.reports.find((x) => x.status === 'open');
+  assert((await req(`/api/admin/reports/${openRep.id}`, { method: 'PATCH', body: { status: 'resolved' }, session: admin })).data.status === 'resolved', 'résolution d’un signalement de contenu');
+  const audit = await req('/api/admin/audit', { session: admin });
+  assert(audit.status === 200 && audit.data.logs.length >= 1, 'journal d’audit alimenté');
+  assert((await req('/api/admin/audit', { session: s })).status === 403, 'journal d’audit réservé aux admins');
+
+  assert((await req("/api/search?q=' OR 1=1 --")).status === 200, 'injection SQL dans la recherche neutralisée (requêtes paramétrées)');
+  assert((await req('/api/auth/login', { method: 'POST', body: { email: "x' OR '1'='1", password: 'x' } })).status === 401, 'injection SQL sur la connexion refusée');
+  const ownA = jar(); const ownB = jar();
+  await req('/api/auth/signup', { method: 'POST', body: { email: 'ownerA@example.com', password: 'secret123', username: 'OwnerA' }, session: ownA });
+  await req('/api/auth/signup', { method: 'POST', body: { email: 'ownerB@example.com', password: 'secret123', username: 'OwnerB' }, session: ownB });
+  await req('/api/favorites', { method: 'POST', body: { targetType: 'quiz', targetId: '1', note: 'secret-A' }, session: ownA });
+  const favA = (await req('/api/favorites', { session: ownA })).data.favorites.find((f) => f.note === 'secret-A');
+  assert((await req('/api/favorites', { session: ownB })).data.favorites.length === 0, 'les favoris d’un autre compte sont invisibles');
+  await req(`/api/favorites/${favA.id}`, { method: 'DELETE', session: ownB });
+  assert((await req('/api/favorites', { session: ownA })).data.favorites.some((f) => f.id === favA.id), 'supprimer le favori d’un autre compte est impossible');
+  await req('/api/quizzes/1/attempt', { method: 'POST', body: { answers: [] }, session: ownA });
+  const nbOwnA = await req('/api/error-notebook', { session: ownA });
+  const ownErrId = nbOwnA.data.groups[0].entries[0].id;
+  await req(`/api/error-notebook/${ownErrId}/resolve`, { method: 'POST', session: ownB });
+  assert((await req('/api/error-notebook', { session: ownA })).data.total === nbOwnA.data.total, 'le carnet d’erreurs d’un autre compte n’est pas modifiable');
+
+  const fs = await import('node:fs');
+  const nodePath = await import('node:path');
+  const rootDir = process.cwd();
+  const appHtml = fs.readFileSync(nodePath.join(rootDir, 'public/app.html'), 'utf8');
+  const authHtml = fs.readFileSync(nodePath.join(rootDir, 'public/auth.html'), 'utf8');
+  const css = fs.readFileSync(nodePath.join(rootDir, 'public/css/app.css'), 'utf8');
+  const apiJs = fs.readFileSync(nodePath.join(rootDir, 'public/js/api.js'), 'utf8');
+  assert(/lang="fr"/.test(appHtml) && /viewport/.test(appHtml), 'HTML : langue déclarée et viewport responsive');
+  assert(/class="skip-link"/.test(appHtml) && /id="view"/.test(appHtml), 'lien d’évitement vers le contenu principal');
+  assert(/aria-label/.test(appHtml), 'contrôles interactifs étiquetés (aria-label)');
+  const labels = (authHtml.match(/<label for="([^"]+)"/g) || []).map((s) => s.match(/for="([^"]+)"/)[1]);
+  const fieldIds = (authHtml.match(/id="(li-email|li-pass|su-email|su-pass|su-username|fp-email|rp-pass|rp-pass2)"/g) || []);
+  assert(fieldIds.length >= 8 && fieldIds.every((i) => labels.some((l) => i.includes(`"${l}"`))), 'formulaires : chaque champ principal a un label associé');
+  assert(/:focus-visible/.test(css) && /prefers-reduced-motion/.test(css), 'CSS : focus visible et respect de « reduced motion »');
+  assert(/aria-live/.test(apiJs), 'les notifications toast sont annoncées aux lecteurs d’écran');
 }

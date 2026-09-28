@@ -48,6 +48,8 @@ services:
         value: "168"
       - key: VIDEO_AI_API_KEY
         sync: false
+      - key: ADS_ENABLED
+        value: "true"
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: GOOGLE_CLIENT_SECRET

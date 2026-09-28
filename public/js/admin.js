@@ -10,6 +10,9 @@ const ADMIN_NAV = [
   { id: 'ads', label: 'Publicités', icon: '📣' },
   { id: 'activity', label: 'Activité', icon: '⚡' },
   { id: 'reports', label: 'Signalements', icon: '🚩' },
+  { id: 'curricula', label: 'Programmes', icon: '🎓' },
+  { id: 'audit', label: 'Audit', icon: '🧾' },
+  { id: 'diagnostics', label: 'Diagnostics', icon: '🩺' },
 ];
 let admin = null;
 
@@ -18,7 +21,7 @@ function chrome() {
   document.getElementById('adminUser').innerHTML = `<div class="avatar sm">${esc(admin.avatar || 'A')}</div><div><div style="font-weight:700;font-size:.84rem">${esc(admin.firstName || 'Admin')}</div><div class="faint" style="font-size:.72rem">${esc(admin.email)}</div></div>`;
 }
 
-const views = { stats: vStats, users: vUsers, subs: vSubs, quizzes: vQuizzes, ads: vAds, activity: vActivity, reports: vReports };
+const views = { stats: vStats, users: vUsers, subs: vSubs, quizzes: vQuizzes, ads: vAds, activity: vActivity, reports: vReports, curricula: vCurricula, audit: vAudit, diagnostics: vDiagnostics };
 
 async function route() {
   const name = location.hash.replace('#', '') || 'stats';
@@ -164,9 +167,52 @@ async function vActivity() {
 async function vReports() {
   view.innerHTML = '<div class="skeleton" style="height:100px"></div>';
   const data = await api('/api/admin/reports');
-  view.innerHTML = `<div class="card"><b>Signalements</b>${data.reports.length ? `<div style="overflow-x:auto"><table class="admin-table mt2"><thead><tr><th>Date</th><th>Type</th><th>Cible</th><th>Raison</th><th>Statut</th></tr></thead><tbody>
-    ${data.reports.map((r) => `<tr><td>${new Date(r.created_at).toLocaleString('fr-FR')}</td><td>${esc(r.target_type)}</td><td>${esc(r.target_id || '')}</td><td>${esc(r.reason || '')}</td><td><span class="pill pill-amber">${esc(r.status)}</span></td></tr>`).join('')}
+  view.innerHTML = `<div class="card"><b>Signalements</b>${data.reports.length ? `<div style="overflow-x:auto"><table class="admin-table mt2"><thead><tr><th>Date</th><th>Type</th><th>Cible</th><th>Raison</th><th>Version</th><th>Statut</th><th></th></tr></thead><tbody>
+    ${data.reports.map((r) => `<tr><td>${new Date(r.created_at).toLocaleString('fr-FR')}</td><td>${esc(r.target_type)}</td><td>${esc(r.target_id || '')}</td><td>${esc(r.reason || '')}</td><td>${r.content_version || '—'}</td><td><span class="pill pill-amber">${esc(r.status)}</span></td><td>${r.status === 'open' ? `<button class="btn btn-ghost btn-sm" data-resolve="${r.id}">Résoudre</button><button class="btn btn-ghost btn-sm" data-reject="${r.id}">Rejeter</button>` : ''}</td></tr>`).join('')}
   </tbody></table></div>` : '<div class="empty"><div class="em">🚩</div><b>Aucun signalement. Tout est calme.</b></div>'}</div>`;
+  view.querySelectorAll('[data-resolve]').forEach((b) => b.addEventListener('click', async () => { await api(`/api/admin/reports/${b.dataset.resolve}`, { method: 'PATCH', body: { status: 'resolved' } }); toast('Signalement résolu', 'success'); vReports(); }));
+  view.querySelectorAll('[data-reject]').forEach((b) => b.addEventListener('click', async () => { await api(`/api/admin/reports/${b.dataset.reject}`, { method: 'PATCH', body: { status: 'rejected' } }); toast('Signalement rejeté', 'info'); vReports(); }));
+}
+
+async function vCurricula() {
+  view.innerHTML = '<div class="skeleton" style="height:100px"></div>';
+  const data = await api('/api/admin/curricula');
+  view.innerHTML = `<div class="card"><b>Programmes (${data.curricula.length})</b><p class="form-note mt1">Statut de contenu : published / partial / unavailable.</p><div style="overflow-x:auto"><table class="admin-table mt2"><thead><tr><th>Pays</th><th>Niveau</th><th>Classe</th><th>Voie / domaine</th><th>Statut</th><th>Session</th><th></th></tr></thead><tbody>
+    ${data.curricula.map((c) => `<tr><td>${esc(c.country_label)}</td><td>${esc(c.level)}</td><td>${esc(c.grade || '—')}</td><td>${esc(`${c.track || ''} ${c.domain || ''}`.trim() || '—')}</td><td><select data-cur="${c.id}" class="select" style="min-width:130px">${['published', 'partial', 'unavailable'].map((s) => `<option value="${s}" ${c.content_status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></td><td><input class="input" data-session="${c.id}" value="${esc(c.session || '')}" style="width:90px" placeholder="2026" /></td><td><button class="btn btn-ghost btn-sm" data-save-cur="${c.id}">Enregistrer</button></td></tr>`).join('')}
+  </tbody></table></div></div>`;
+  view.querySelectorAll('[data-save-cur]').forEach((b) => b.addEventListener('click', async () => {
+    const id = b.dataset.saveCur;
+    await api(`/api/admin/curricula/${id}`, { method: 'PATCH', body: { contentStatus: view.querySelector(`[data-cur="${id}"]`).value, session: view.querySelector(`[data-session="${id}"]`).value } });
+    toast('Programme mis à jour', 'success');
+  }));
+}
+
+async function vAudit() {
+  view.innerHTML = '<div class="skeleton" style="height:100px"></div>';
+  const data = await api('/api/admin/audit');
+  view.innerHTML = `<div class="card"><b>Journal d’audit</b>${data.logs.length ? `<div style="overflow-x:auto"><table class="admin-table mt2"><thead><tr><th>Date</th><th>Acteur</th><th>Action</th><th>Cible</th><th>Détail</th></tr></thead><tbody>
+    ${data.logs.map((l) => `<tr><td>${new Date(l.created_at).toLocaleString('fr-FR')}</td><td>${esc(l.actor || '—')}</td><td>${esc(l.action)}</td><td>${esc((l.target_type || '') + ' ' + (l.target_id || ''))}</td><td class="faint" style="font-size:.75rem">${esc(l.meta || '')}</td></tr>`).join('')}
+  </tbody></table></div>` : '<div class="empty"><div class="em">🧾</div><b>Aucune action journalisée.</b></div>'}</div>`;
+}
+
+async function vDiagnostics() {
+  view.innerHTML = '<div class="skeleton" style="height:100px"></div>';
+  const d = await api('/api/admin/diagnostics');
+  const pill = (ok, label) => `<span class="pill ${ok ? 'pill-lime' : 'pill-red'}">${label}</span>`;
+  view.innerHTML = `<div class="grid g2">
+    <div class="card"><b>Services externes</b><div class="stack mt2" style="gap:8px">
+      <div>${pill(d.mail.configured, 'Email')} ${esc(d.mail.provider || 'non configuré')}</div>
+      <div>${pill(d.stripe.secretConfigured, 'Stripe')} secret=${d.stripe.secretConfigured} · webhook=${d.stripe.webhookSecretConfigured} · mode=${esc(d.stripe.mode)}</div>
+      <div>${pill(d.youtube.configured, 'YouTube')} ${d.youtube.configured ? 'configuré' : 'non configuré'}</div>
+      <div>${pill(d.llm.studyConfigured, 'Étude IA')} · Vidéo IA=${d.llm.videoAiConfigured}</div>
+    </div></div>
+    <div class="card"><b>Compteurs</b><div class="stack mt2" style="gap:8px">
+      <div>Comptes non vérifiés : <b>${d.counts.unverifiedUsers}</b></div>
+      <div>Signalements ouverts : <b>${d.counts.pendingReports}</b></div>
+      <div>Événements Stripe : <b>${d.counts.stripeEvents}</b> (non traités : ${d.counts.stripeEventsUnprocessed})</div>
+      <div>Contenus non publiés : <b>${d.counts.unpublishedContent}</b></div>
+    </div></div>
+  </div>`;
 }
 
 document.getElementById('themeBtn')?.addEventListener('click', () => { toggleTheme(); document.getElementById('themeBtn').textContent = document.documentElement.dataset.theme === 'dark' ? '🌙' : '☀️'; });

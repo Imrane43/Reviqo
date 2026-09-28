@@ -17,6 +17,7 @@ const NAV = [
   { id: 'leaderboard', label: 'Classement', icon: '🏆' },
   { id: 'friends', label: 'Amis', icon: '👥' },
   { id: 'teams', label: 'Équipes', icon: '🛡️' },
+  { id: 'search', label: 'Recherche', icon: '🔎' },
   { id: 'profile', label: 'Profil', icon: '👤', bottom: true },
   { id: 'billing', label: 'Abonnement', icon: '💎' },
 ];
@@ -77,14 +78,14 @@ async function route() {
     reviser: ['Flashcards', 'Mémorise plus vite'],
     video: ['Vidéo IA', 'Ton cours en vidéo'], coach: ['Coach IA', 'Ton tuteur personnel'],
     progress: ['Ma progression', 'Tes statistiques'], profile: ['Profil', 'Ton espace'], achievements: ['Badges', 'Tes accomplissements'],
-    leaderboard: ['Classement', 'Compare-toi'], friends: ['Amis', 'Apprends en équipe'], teams: ['Équipes', 'Apprends en équipe'], billing: ['Abonnement', 'Gère ton plan'],
+    leaderboard: ['Classement', 'Compare-toi'], friends: ['Amis', 'Apprends en équipe'], teams: ['Équipes', 'Apprends en équipe'], search: ['Recherche', 'Cours, quiz, flashcards'], billing: ['Abonnement', 'Gère ton plan'],
     pricing: ['Premium', 'Passe au niveau supérieur'], notifications: ['Notifications', 'Tes alertes'], quiz: ['Quiz', 'À toi de jouer'], game: ['Reviqo Play', 'Mini-jeu'],
   };
   const [title, eyebrow] = titles[name] || ['REVIQO', 'Learn. Play. Master.'];
   document.getElementById('pageTitle').textContent = title;
   document.getElementById('pageEyebrow').textContent = eyebrow;
 
-  const views = { home: vHome, study: vStudy, reviser: vReviser, quizzes: vQuizzes, video: vVideo, coach: vCoach, play: vPlay, progress: vProgress, profile: vProfile, achievements: vAchievements, leaderboard: vLeaderboard, friends: vFriends, teams: vTeams, billing: vBilling, pricing: vPricing, notifications: vNotifications };
+  const views = { home: vHome, study: vStudy, reviser: vReviser, quizzes: vQuizzes, video: vVideo, coach: vCoach, play: vPlay, progress: vProgress, profile: vProfile, achievements: vAchievements, leaderboard: vLeaderboard, friends: vFriends, teams: vTeams, search: vSearch, billing: vBilling, pricing: vPricing, notifications: vNotifications };
   // Libère les ressources de la vue précédente (ex. flux temps réel du classement).
   if (typeof window.__cleanup === 'function') { try { window.__cleanup(); } catch { /* ignore */ } window.__cleanup = null; }
   try {
@@ -101,8 +102,9 @@ async function route() {
 // ---------- Home / Dashboard ----------
 async function vHome() {
   view.innerHTML = skeleton(4);
-  const [stats, daily, lb, subjects] = await Promise.all([
+  const [stats, daily, lb, subjects, dash, ads] = await Promise.all([
     api('/api/me/stats'), api('/api/daily'), api('/api/leaderboard?scope=global'), Promise.resolve(ctx.subjects),
+    api('/api/dashboard').catch(() => null), api('/api/ads/config').catch(() => null),
   ]);
   const u = ctx.user;
   const hour = new Date().getHours();
@@ -132,6 +134,17 @@ async function vHome() {
       ${progressBar(levelPct)}
       <p class="mt2" style="margin:0;font-size:.9rem">${u.plan === 'premium' ? 'Profite de l’illimité et brille.' : 'Continue régulièrement — la régularité paie.'}</p>
     </div>
+
+    ${dash ? `<div class="card mt2"><div class="between"><b>📅 Révisions du jour</b><a class="btn btn-ghost btn-sm" href="#reviser">Réviser →</a></div>
+      <div class="row wrap mt2" style="gap:8px">
+        <span class="pill ${dash.revisions.due > 0 ? 'pill-amber' : 'pill-lime'}">🃏 ${dash.revisions.due} carte(s) due(s)</span>
+        <span class="pill ${dash.notebook.unresolved > 0 ? 'pill-red' : ''}">📝 ${dash.notebook.unresolved} notion(s) à reprendre</span>
+        <span class="pill">📊 Précision ${dash.mastery.avgAccuracy}%</span>
+        ${dash.teamGoal ? `<span class="pill pill-violet">🛡️ ${dash.teamGoal.progress}/${dash.teamGoal.target} XP d’équipe</span>` : ''}
+      </div>
+      ${(dash.mastery.mastered.length || dash.mastery.toRework.length) ? `<p class="form-note mt1">${dash.mastery.mastered.length ? `Maîtrisé : ${dash.mastery.mastered.slice(0, 3).map((m) => esc(m.name)).join(', ')}. ` : ''}${dash.mastery.toRework.length ? `À retravailler : ${dash.mastery.toRework.slice(0, 3).map((m) => esc(m.name)).join(', ')}.` : ''}</p>` : ''}
+    </div>` : ''}
+    ${adSlotHtml(ads, 'dashboard-top')}
 
     <div class="between mt3"><h2 style="margin:0">Reprendre l’apprentissage</h2><a class="btn btn-ghost btn-sm" href="#quizzes">Tout voir →</a></div>
     <div class="grid g2 mt2">
@@ -648,6 +661,35 @@ async function editProfileModal() {
   });
 }
 
+// ---------- Recherche globale ----------
+async function vSearch(params) {
+  const q = params.get('q') || '';
+  view.innerHTML = `<div class="card"><div class="row" style="gap:8px;flex-wrap:wrap"><input class="input" id="searchInput" style="flex:1;min-width:200px" placeholder="Rechercher un cours, un quiz, une flashcard…" value="${esc(q)}" /><button class="btn btn-primary" id="searchBtn">Rechercher</button></div><p class="form-note mt1">Recherche dans ta bibliothèque, selon ton programme et tes droits d’accès.</p><div id="searchResults" class="mt2"></div></div>`;
+  const run = async () => {
+    const query = document.getElementById('searchInput').value.trim();
+    const host = document.getElementById('searchResults');
+    if (query.length < 2) { host.innerHTML = '<p class="faint mt2" style="font-size:.85rem">Saisis au moins 2 caractères.</p>'; return; }
+    host.innerHTML = skeleton(2);
+    try {
+      const r = await api(`/api/search?q=${encodeURIComponent(query)}`);
+      host.innerHTML = r.results.length ? r.results.map((x) => `<a class="card card-lift mt2" href="${esc(x.link)}"><div class="between"><b style="font-size:.92rem">${esc(x.title)}</b><span class="pill">${x.type === 'quiz' ? '📝 Quiz' : '🃏 Carte'}${x.isPremium ? ' · 💎' : ''}</span></div><p class="muted" style="font-size:.84rem;margin:6px 0 0">${esc((x.description || '').slice(0, 140))}</p><p class="faint" style="font-size:.74rem;margin:6px 0 0">${esc(x.subject?.icon || '')} ${esc(x.subject?.name || '')}${x.chapter ? ' · ' + esc(x.chapter) : ''}</p></a>`).join('') : '<div class="empty"><div class="em">🔎</div><b>Aucun résultat.</b></div>';
+    } catch (ex) { host.innerHTML = `<div class="empty"><div class="em">😕</div><b>${esc(ex.message)}</b></div>`; }
+  };
+  document.getElementById('searchBtn').addEventListener('click', run);
+  document.getElementById('searchInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
+  if (q) run();
+}
+
+// ---------- Publicités (comptes gratuits uniquement) ----------
+function adSlotHtml(config, slotName) {
+  if (!config || !config.show) return '';
+  const slot = (config.slots || []).find((s) => s.slot === slotName) || (config.slots || [])[0];
+  if (!slot) return '';
+  const w = slot.width || 320;
+  const h = slot.height || 100;
+  return `<div class="card mt2" style="display:flex;align-items:center;justify-content:center;border-style:dashed"><div class="center"><span class="faint" style="font-size:.68rem;text-transform:uppercase;letter-spacing:.08em">Publicité</span><div style="width:${w}px;max-width:100%;height:${h}px;display:grid;place-items:center;background:var(--surface-2);border-radius:8px"><span class="faint" style="font-size:.8rem">${esc(slot.label || 'Emplacement publicitaire')}</span></div></div></div>`;
+}
+
 // ---------- Teams ----------
 async function vTeams() {
   view.innerHTML = skeleton(2);
@@ -832,13 +874,29 @@ async function vPricing() {
 // ---------- Notifications ----------
 async function vNotifications() {
   view.innerHTML = skeleton(2);
-  const data = await api('/api/notifications');
+  const [data, nprefs] = await Promise.all([api('/api/notifications'), api('/api/notifications/prefs')]);
   view.innerHTML = `
     <div class="between"><b>${data.notifications.length} notification(s)</b>${data.unread ? '<button class="btn btn-outline btn-sm" id="readAll">Tout marquer comme lu</button>' : ''}</div>
     <div class="stack mt2">
       ${data.notifications.length ? data.notifications.map((n) => `<div class="card ${n.read ? '' : 'card-lift'}" style="${n.read ? 'opacity:.7' : 'border-color:rgba(108,92,231,.4)'}"><div class="between"><b style="font-size:.92rem">${esc(n.title)}</b><span class="faint" style="font-size:.74rem">${timeAgo(n.created_at)}</span></div><p class="muted" style="font-size:.85rem;margin:6px 0 0">${esc(n.body || '')}</p></div>`).join('') : '<div class="empty"><div class="em">🔔</div><b>Aucune notification pour l’instant.</b><p class="faint">Tes défis et badges apparaîtront ici.</p></div>'}
+    </div>
+    <div class="card mt2"><b>⚙️ Préférences de notifications</b>
+      <div class="grid g3 mt2">
+        <div class="field"><label>Fréquence</label><select class="select" id="nFreq">${['instant', 'daily', 'weekly', 'off'].map((f) => `<option value="${f}" ${nprefs.frequency === f ? 'selected' : ''}>${f}</option>`).join('')}</select></div>
+        <div class="field"><label>Début heures silencieuses</label><input class="input" id="nQs" placeholder="22:00" value="${esc(nprefs.quietStart || '')}" /></div>
+        <div class="field"><label>Fin heures silencieuses</label><input class="input" id="nQe" placeholder="07:00" value="${esc(nprefs.quietEnd || '')}" /></div>
+      </div>
+      <div class="row wrap mt1" style="gap:12px">${[['friend', 'Amis & défis'], ['achievement', 'Badges'], ['streak', 'Rappels de série'], ['daily', 'Défi du jour'], ['billing', 'Abonnement']].map(([k, l]) => `<label class="row" style="font-size:.85rem;gap:6px"><input type="checkbox" data-npref="${k}" ${nprefs.prefs?.[k] !== false ? 'checked' : ''} /> ${l}</label>`).join('')}</div>
+      <button class="btn btn-primary btn-sm mt2" id="saveNotifPrefs">Enregistrer</button>
+      <p class="form-note mt1">Rappels facultatifs et réglables — aucune mécanique culpabilisante.</p>
     </div>`;
   document.getElementById('readAll')?.addEventListener('click', async () => { await api('/api/notifications/read', { method: 'POST', body: {} }); vNotifications(); refreshNotifDot(); });
+  document.getElementById('saveNotifPrefs')?.addEventListener('click', async () => {
+    const prefsObj = {};
+    view.querySelectorAll('[data-npref]').forEach((c) => { prefsObj[c.dataset.npref] = c.checked; });
+    await api('/api/notifications/prefs', { method: 'PATCH', body: { prefs: prefsObj, quietStart: document.getElementById('nQs').value, quietEnd: document.getElementById('nQe').value, frequency: document.getElementById('nFreq').value } });
+    toast('Préférences enregistrées ✅', 'success');
+  });
 }
 
 async function refreshNotifDot() {

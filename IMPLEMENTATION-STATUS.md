@@ -3,7 +3,7 @@
 Ce fichier suit l'avancement réel, étape par étape. Il distingue
 **implémenté**, **testé**, **non testé** et **bloqué par une configuration externe**.
 
-Dernière mise à jour : étapes 1–10 terminées (+ Équipes de révision).
+Dernière mise à jour : **cahier des charges complet — étapes 1 à 12 terminées.**
 
 ---
 
@@ -269,12 +269,87 @@ Note : un utilisateur = une équipe (choix documenté, évite les ambiguïtés d
 
 ---
 
-## ⏳ Étapes restantes (non commencées)
+## ✅ Étape 11 — Publicités, révisions et outils d'apprentissage
 
-- **11** Publicités ciblées + répétition espacée, carnet d'erreurs, planning, recherche globale, notifications.
-- **12** Tests complets, sécurité, accessibilité, documentation finale.
+- **Publicités (comptes gratuits uniquement)** : `GET /api/ads/config` renvoie `show`,
+  `neverShowForPremium`, `slots` (avec dimensions réservées pour éviter les décalages) et une
+  politique explicite (aucune conversation du Coach ni résultat scolaire transmise aux annonceurs).
+  **Aucune publicité** pour premium/admin (testé). **Désactivation globale** côté serveur
+  (`ADS_ENABLED` ou `POST /api/admin/ads/global`) — testé. Pas d’appel réseau bloquant.
+- **Répétition espacée** (`flashcard_reviews`) : notes « À revoir / Difficile / Bien / Facile »,
+  intervalles croissants (SM-2 simplifié), cartes dues du jour, statistiques. Testé (1 j → 6 j →
+  allongement → remise à 1 avec oubli).
+- **Carnet d’erreurs** (`error_notebook`) : alimenté automatiquement par les réponses fausses,
+  **idempotent** (une entrée par question), regroupé par matière avec suggestions de quiz, entrées
+  résolvables. Testé.
+- **Planning de révision** (`study_plans`) : date d’examen + temps disponible + matières prioritaires
+  → planning réaliste, **recalculable**, tenant compte des cartes dues et du carnet d’erreurs. Testé.
+- **Tableau de bord** : révisions du jour, notions maîtrisées / à retravailler, objectif d’équipe,
+  précision — sans confondre temps passé, XP et maîtrise réelle.
+- **Favoris & notes privées** (`favorites`) : cours/quiz/flashcards/vidéos + note personnelle,
+  strictement privés (testé).
+- **Recherche globale** : quiz et flashcards, filtres matière/difficulté/type, **respect du programme
+  et des droits** (contenu premium exclu pour un compte gratuit) — testé.
+- **Notifications** : préférences par type, **fréquence** réglable, **heures silencieuses** (UTC),
+  libellés non culpabilisants. Défi d’équipe → notification de l’équipe adverse, respectant les
+  préférences. Testé (type désactivé, heures silencieuses, hors plage).
+- **Migrations** : `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ADD COLUMN` — non destructif.
+- **Testé** : 30 assertions dédiées.
+
+Portée UI : recherche globale, préférences de notifications, carte « Révisions du jour » (tableau de
+bord) et emplacement publicitaire sont câblés côté front ; carnet/planning/favoris sont complets côté
+API (UI minimale à finaliser à l’étape 12 si besoin).
+
+---
+
+## ✅ Étape 12 — Sécurité, confidentialité, accessibilité, admin & documentation
+
+- **Confidentialité** : `GET /api/me/export` (export complet **sans aucun secret**) et
+  `DELETE /api/me` (suppression de compte : données personnelles effacées, **facturation conservée**,
+  sessions révoquées, anonymisation). Un admin ne peut pas se supprimer depuis l'app. Testé.
+- **Journal d'audit** (`audit_logs`) sur les actions sensibles (ban/rôle/plan, suppression de compte,
+  publication de contenu, mise à jour de programme, résolution de signalement) + `GET /api/admin/audit`.
+- **Administration des contenus & support** : `GET/PATCH /api/admin/curricula` (statut de contenu,
+  année scolaire, session, source), `POST /api/admin/preview-program` (prévisualisation d'un profil
+  **sans usurper de compte réel**), `PATCH /api/admin/reports/:id` (résolution/rejet),
+  `GET /api/admin/diagnostics` (e-mail, Stripe, YouTube, LLM, compteurs d'erreurs).
+- **Sécurité** : requêtes **paramétrées** (injection SQL neutralisée — testé), isolation stricte des
+  données entre comptes (favoris, carnet d'erreurs — testé), révocation de session, rate limiting,
+  en-têtes httpOnly, secrets jamais renvoyés au client.
+- **Accessibilité** : `lang`/viewport, **lien d'évitement**, labels associés aux champs,
+  `aria-label` sur les contrôles, `aria-live` sur les notifications, **focus visible**,
+  `prefers-reduced-motion`, `prefers-contrast`. Vérifications automatisées (testées).
+- **Documentation finale** : `docs/DEPLOYMENT.md` (déploiement + retour arrière),
+  `docs/PERMISSIONS.md` (rôles, accès, règles d'XP, droits premium), `docs/EXTERNAL-SERVICES.md`.
+- **Testé** : 26 assertions dédiées (total 327).
+
+---
 
 ## Tests
 
-- `npm test` → **271/271** assertions (95 d'origine + étapes 2 à 10).
+- `npm test` → **327/327** assertions (95 d'origine + étapes 2 à 12).
 - `npm run check` → garde-fou anti-régression de déploiement (modules front-end jamais dans `src/`).
+- `npm run e2e` → parcours navigateur Playwright (nécessite les navigateurs).
+
+---
+
+## Bilan final (implémenté / testé / non testé / bloqué)
+
+**Implémenté et testé automatiquement** (327 assertions) : authentification (vérification e-mail par
+code HMAC), unicité e-mail/pseudo, conversion invité, révocation de session, bannissement, profil
+scolaire par pays + référentiel de programmes, contenus par classe + bibliothèque avec statuts,
+paiement Stripe (liens + webhooks signés + cycle de vie), Coach IA RAG, Vidéo IA premium, amis/XP
+idempotent/classements temps réel, équipes (invitations, rôles, ligue, objectifs, défis), publicités,
+répétition espacée, carnet d'erreurs, planning, tableau de bord, recherche, favoris/notes,
+notifications, export/suppression, journal d'audit, diagnostics, accessibilité (statique).
+
+**Implémenté, non testé en conditions réelles** (nécessite des clés externes) : envoi réel d'e-mails,
+paiements et webhooks Stripe live, connexion Google, recherche YouTube réelle, analyse IA par modèle,
+réponses des fournisseurs LLM. La mécanique, les replis et les erreurs sont en revanche testés.
+
+**Bloqué par configuration externe (documenté)** : tout ce qui précède tant que les clés ne sont pas
+fournies ; l'application ne présente jamais ces intégrations comme opérationnelles sans clé.
+
+**Limites connues** : base SQLite à stockage éphémère sur Render sans disque persistant ; temps réel
+par SSE (pas de WebSocket) ; un utilisateur = une équipe ; contenus par classe limités à maths/français
+6ᵉ/3ᵉ (le reste en contenu générique, indiqué à l'écran) ; UI dédiée minimale pour carnet/planning/favoris.

@@ -32,6 +32,8 @@ export function toast(message, type = 'info', timeout = 3200) {
   if (!host) {
     host = document.createElement('div');
     host.className = 'toast-host';
+    host.setAttribute('role', 'status');
+    host.setAttribute('aria-live', 'polite');
     document.body.appendChild(host);
   }
   const node = document.createElement('div');

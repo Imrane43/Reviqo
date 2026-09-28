@@ -14,6 +14,7 @@
  */
 import crypto from 'node:crypto';
 import { getDb, onXpGranted } from './db.js';
+import { notifyUser } from './notify.js';
 
 export const LEAGUES = {
   small: { label: 'Petite (≤ 5 membres)', max: 5 },
@@ -351,6 +352,9 @@ export function proposeChallenge(actor, { opponentTeamId, subjectId, difficulty,
     VALUES (?, ?, ?, ?, ?, ?, ?)`).run(m.team_id, opponent, Number(subjectId) || null, diff, q, deadline, actor.id);
   logActivity(m.team_id, actor.id, 'challenge_sent', 'Un défi a été lancé à une autre équipe ⚔️');
   logActivity(opponent, actor.id, 'challenge_received', 'Une équipe vous a défiés ⚔️');
+  const opponentAdmins = d.prepare("SELECT user_id FROM team_members WHERE team_id = ? AND role = 'admin'").all(opponent);
+  const teamName = d.prepare('SELECT name FROM teams WHERE id = ?').get(m.team_id)?.name || 'Une équipe';
+  for (const a of opponentAdmins) notifyUser(a.user_id, 'team', 'Défi reçu ⚔️', `${teamName} vous a défiés. Rendez-vous dans Équipes pour répondre.`);
   return { ok: true, id: info.lastInsertRowid, deadline, status: 'pending' };
 }
 

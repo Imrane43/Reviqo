@@ -410,6 +410,65 @@ CREATE TABLE IF NOT EXISTS team_challenges (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   finalized_at TEXT
 );
+
+-- Étape 11 — répétition espacée, carnet d'erreurs, planning, favoris/notes.
+CREATE TABLE IF NOT EXISTS flashcard_reviews (
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  flashcard_id INTEGER NOT NULL REFERENCES flashcards(id),
+  ease REAL NOT NULL DEFAULT 2.5,
+  interval_days INTEGER NOT NULL DEFAULT 0,
+  reps INTEGER NOT NULL DEFAULT 0,
+  lapses INTEGER NOT NULL DEFAULT 0,
+  due_date TEXT NOT NULL,
+  last_rating TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, flashcard_id)
+);
+CREATE INDEX IF NOT EXISTS idx_reviews_due ON flashcard_reviews(user_id, due_date);
+CREATE TABLE IF NOT EXISTS error_notebook (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  quiz_id INTEGER,
+  subject_id INTEGER,
+  question_index INTEGER NOT NULL DEFAULT 0,
+  topic TEXT,
+  resolved INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(user_id, quiz_id, question_index)
+);
+CREATE INDEX IF NOT EXISTS idx_errors_user ON error_notebook(user_id, resolved);
+CREATE TABLE IF NOT EXISTS study_plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  exam_date TEXT,
+  minutes_per_day INTEGER NOT NULL DEFAULT 30,
+  subjects TEXT NOT NULL DEFAULT '[]',
+  plan TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_plans_user ON study_plans(user_id);
+CREATE TABLE IF NOT EXISTS favorites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(user_id, target_type, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id);
+
+-- Étape 12 — journal d'audit des actions sensibles.
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_id INTEGER,
+  action TEXT NOT NULL,
+  target_type TEXT,
+  target_id TEXT,
+  meta TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
 `;
 
 const SUBJECTS = [
@@ -610,6 +669,18 @@ function runMigrations() {
   ensureColumn('xp_transactions', 'ref', 'TEXT');
   ensureColumn('team_challenges', 'accepted_at', 'TEXT');
   ensureColumn('team_challenges', 'accepted_seq', 'INTEGER');
+  // Étape 11 — notifications (heures silencieuses) + publicités (dimensions/label/consentement).
+  ensureColumn('users', 'quiet_start', 'TEXT');
+  ensureColumn('users', 'quiet_end', 'TEXT');
+  ensureColumn('users', 'notify_frequency', "TEXT NOT NULL DEFAULT 'instant'");
+  ensureColumn('ad_settings', 'width', 'INTEGER');
+  ensureColumn('ad_settings', 'height', 'INTEGER');
+  ensureColumn('ad_settings', 'label', 'TEXT');
+  ensureColumn('ad_settings', 'consent_required', 'INTEGER NOT NULL DEFAULT 1');
+  // Étape 12 — suppression de compte (anonymisation) et suivi des signalements.
+  ensureColumn('users', 'deleted_at', 'TEXT');
+  ensureColumn('reports', 'resolved_by', 'INTEGER');
+  ensureColumn('reports', 'resolved_at', 'TEXT');
   try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_xp_ref ON xp_transactions(ref) WHERE ref IS NOT NULL'); }
   catch (e) { console.warn('[db] index XP ref non créé:', e.message); }
   try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_invoice ON payments(stripe_invoice_id)'); }

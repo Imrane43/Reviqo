@@ -107,6 +107,28 @@ Le contenu s'adapte au **pays**, au **système scolaire**, au **niveau**, à la 
 > **propre à chaque classe** arrive à l'étape suivante. La France est marquée `partial` et
 > l'interface l'indique (`Contenu générique : les fiches propres à ta classe arrivent…`).
 
+## Apprentissage : révisions, carnet, planning, recherche, favoris
+
+- **Répétition espacée** : notes « À revoir / Difficile / Bien / Facile », intervalles croissants,
+  cartes dues du jour (`/api/reviews/*`).
+- **Carnet d'erreurs** : les réponses fausses y sont enregistrées automatiquement (idempotent),
+  regroupées par matière avec suggestions de quiz (`/api/error-notebook`).
+- **Planning de révision** : date d'examen + temps disponible + matières → planning recalculable
+  (`/api/planner`).
+- **Tableau de bord** (`/api/dashboard`) : révisions du jour, notions maîtrisées/à retravailler.
+- **Recherche globale** (`/api/search`) : quiz et flashcards, filtres, respect du programme et des
+  droits (premium exclu pour un compte gratuit).
+- **Favoris & notes privées** (`/api/favorites`).
+- **Notifications** : préférences par type, fréquence, heures silencieuses (`/api/notifications/prefs`).
+
+## Publicités (comptes gratuits)
+
+- Emplacements **uniquement pour les comptes non premium** ; **aucun** chargement pour premium/admin.
+- Dimensions réservées (pas de décalage de mise en page), emplacement clairement identifié,
+  aucun bouton trompeur, aucun blocage si le réseau publicitaire est indisponible.
+- **Aucune** donnée du Coach IA ni résultat scolaire transmise aux annonceurs.
+- Désactivation globale côté serveur (`ADS_ENABLED` ou `POST /api/admin/ads/global`).
+
 ## Équipes de révision
 
 - **Création / adhésion** : nom unique, création → créateur administrateur ; adhésion par **code
@@ -248,9 +270,29 @@ Variables : `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_MONTHLY/
 ## Tests
 
 ```bash
-npm test        # suite API hermétique (clés externes vides)
+npm test        # 327 assertions (suite API hermétique, clés externes vides)
+npm run check   # garde-fou de déploiement
 npm run e2e     # parcours navigateur Playwright
 ```
+
+## Documentation
+
+- `docs/DEPLOYMENT.md` — déploiement, migrations, procédure de retour arrière, liste de contrôle.
+- `docs/PERMISSIONS.md` — rôles, matrice d'accès aux endpoints, règles d'XP, droits premium.
+- `docs/EXTERNAL-SERVICES.md` — services externes à configurer et comportement sans clé.
+- `IMPLEMENTATION-STATUS.md` — suivi des 12 étapes et bilan final.
+
+## Limites connues
+
+- **SQLite sur Render** : stockage éphémère sans disque persistant (les données sont réinitialisées
+  au redéploiement). Attacher un disque et pointer `DB_PATH` dessus.
+- **Temps réel** : SSE + repli par interrogation périodique (pas de WebSocket).
+- **Un utilisateur = une équipe** (choix documenté).
+- **Contenus par classe** : maths et français en 6ᵉ/3ᵉ ; les autres classes reçoivent le contenu
+  générique, ce que l'interface indique.
+- **UI minimale** pour le carnet d'erreurs, le planning et les favoris (API complète et testée).
+- Les intégrations externes (e-mail, Stripe live, Google, YouTube, IA) ne sont opérationnelles
+  qu'après configuration — voir `docs/EXTERNAL-SERVICES.md`.
 
 ## Arborescence
 

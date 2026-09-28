@@ -14,10 +14,15 @@ import {
   issueVerificationCode, sendVerificationCode, verifyCode, verificationRequired,
   codeTtlMinutes, resendSeconds,
 } from './verification.js';
-import { sendMail } from './mailer.js';
+import { sendMail, emailProvider, emailConfigured } from './mailer.js';
 import { generateWithLLM, gradeAnswers, checkAchievements, progressDailyChallenge, getDailyBoard } from './content.js';
 import { generateVideoScript, askCoach } from './coach.js';
 import { findVideosForRequest, youtubeConfigured } from './video.js';
+import {
+  dueReviews, reviewStats, scheduleReview, errorNotebook, resolveError, recordErrors,
+  generatePlan, getPlan, globalSearch, dashboard,
+} from './learning.js';
+import { notifyUser } from './notify.js';
 import {
   createTeam, teamDetail, listInvites, createInvite, revokeInvite, joinByCode,
   removeMember, setRole, leaveTeam, updateTeam, deleteTeam, goalHistory, activityFeed,
@@ -56,6 +61,14 @@ function rateLimit(max, windowMs) {
 
 function origin(req) {
   return process.env.APP_ORIGIN || `${req.protocol}://${req.get('host')}`;
+}
+
+/** Journalise une action sensible (ne casse jamais l'action en cas d'échec). */
+function auditLog(actorId, action, targetType, targetId, meta) {
+  try {
+    getDb().prepare('INSERT INTO audit_logs (actor_id, action, target_type, target_id, meta) VALUES (?, ?, ?, ?, ?)')
+      .run(actorId || null, action, targetType || null, targetId != null ? String(targetId) : null, meta ? JSON.stringify(meta) : null);
+  } catch { /* l'audit ne doit pas casser l'action */ }
 }
 
 /* ---------- temps réel : clients SSE du classement ---------- */
@@ -296,8 +309,25 @@ export function createApp() {
     const d = getDb();
     const user = getUserFromReq(req);
     const premium = isPremium(user);
-    const slots = d.prepare('SELECT slot, provider, enabled FROM ad_settings').all();
-    res.json({ show: !premium, slotCount: slots.length, slots });
+    const globalRow = d.prepare("SELECT value FROM settings WHERE key = 'ads_enabled'").get();
+    const globallyEnabled = globalRow ? globalRow.value !== '0' : process.env.ADS_ENABLED !== 'false';
+    const slots = d.prepare('SELECT slot, provider, enabled, width, height, label, consent_required FROM ad_settings WHERE enabled = 1').all();
+    res.json({
+      show: globallyEnabled && !premium,
+      globallyEnabled,
+      premium,
+      neverShowForPremium: true,
+      consentRequired: slots.some((s) => s.consent_required),
+      slotCount: slots.length,
+      slots,
+      policy: 'Aucune conversation du Coach IA ni résultat scolaire n’est transmise aux annonceurs.',
+    });
+  });
+
+  app.post('/api/admin/ads/global', requireAdmin, (req, res) => {
+    const enabled = req.body.enabled !== false;
+    getDb().prepare("INSERT INTO settings (key, value) VALUES ('ads_enabled', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(enabled ? '1' : '0');
+    res.json({ ok: true, enabled });
   });
 
   // ---------- auth ----------
@@ -564,6 +594,53 @@ export function createApp() {
     res.json({ user: publicUser(user) });
   });
 
+  // ---------- confidentialité : export et suppression (étape 12) ----------
+  app.get('/api/me/export', requireAuth, (req, res) => {
+    const d = getDb();
+    const id = req.user.id;
+    const u = d.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    res.json({
+      exportedAt: new Date().toISOString(),
+      profile: {
+        id: u.id, email: u.email, firstName: u.first_name, username: u.username, role: u.role, plan: u.plan,
+        country: u.country, schoolLevel: u.school_level, grade: u.grade, track: u.track, domain: u.domain,
+        subjects: u.subjects, goal: u.goal, xp: u.xp, streak: u.streak, created_at: u.created_at,
+        subscriptionStatus: u.subscription_status, notifyPrefs: u.notify_prefs, quietStart: u.quiet_start, quietEnd: u.quiet_end,
+      },
+      attempts: d.prepare('SELECT id, quiz_id, subject_id, score, total, xp, accuracy, duration, mode, created_at FROM quiz_attempts WHERE user_id = ?').all(id),
+      study: d.prepare('SELECT id, subject_id, input_type, substr(input,1,500) AS input, created_at FROM study_sessions WHERE user_id = ?').all(id),
+      xp: d.prepare('SELECT amount, reason, created_at FROM xp_transactions WHERE user_id = ?').all(id),
+      achievements: d.prepare('SELECT achievement_id, unlocked_at FROM user_achievements WHERE user_id = ?').all(id),
+      favorites: d.prepare('SELECT target_type, target_id, note, created_at FROM favorites WHERE user_id = ?').all(id),
+      errorNotebook: d.prepare('SELECT quiz_id, question_index, topic, resolved, created_at FROM error_notebook WHERE user_id = ?').all(id),
+      reviews: d.prepare('SELECT flashcard_id, ease, interval_days, reps, lapses, due_date, last_rating FROM flashcard_reviews WHERE user_id = ?').all(id),
+      plans: d.prepare('SELECT exam_date, minutes_per_day, subjects, created_at FROM study_plans WHERE user_id = ?').all(id),
+      payments: d.prepare('SELECT amount_cents, currency, status, plan, created_at FROM payments WHERE user_id = ?').all(id),
+      team: d.prepare('SELECT team_id, role, joined_at FROM team_members WHERE user_id = ?').get(id) || null,
+      notifications: d.prepare('SELECT type, title, body, read, created_at FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 200').all(id),
+      notice: 'Aucun secret (mot de passe, clé API, jetons) n’est inclus dans cet export.',
+    });
+  });
+
+  app.delete('/api/me', requireAuth, (req, res) => {
+    const d = getDb();
+    const id = req.user.id;
+    if (req.user.role === 'admin') return res.status(400).json({ error: 'ADMIN_PROTECTED', message: 'Un compte administrateur ne peut pas être supprimé depuis l’application.' });
+    for (const table of ['quiz_attempts', 'study_sessions', 'game_sessions', 'xp_transactions', 'user_achievements', 'user_challenges', 'notifications', 'favorites', 'error_notebook', 'flashcard_reviews', 'study_plans', 'coach_usage', 'video_usage', 'team_xp_events']) {
+      try { d.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(id); } catch { /* table absente tolérée */ }
+    }
+    try { d.prepare('DELETE FROM friendships WHERE user_id = ? OR friend_id = ?').run(id, id); } catch { /* ignore */ }
+    try { d.prepare('DELETE FROM team_members WHERE user_id = ?').run(id); } catch { /* ignore */ }
+    const anon = `deleted_${id}@reviqo.invalid`;
+    d.prepare(`UPDATE users SET email = ?, email_canon = ?, password_hash = NULL, first_name = 'Compte supprimé', username = NULL,
+      username_norm = NULL, google_id = NULL, coach_api_key = NULL, coach_provider = NULL, coach_model = NULL,
+      reset_hash = NULL, reset_token = NULL, verify_hash = NULL, avatar = NULL, deleted_at = datetime('now'),
+      is_banned = 1, token_version = token_version + 1, xp = 0, subjects = '[]' WHERE id = ?`).run(anon, anon, id);
+    auditLog(id, 'account_deleted', 'user', id, {});
+    clearAuthCookie(res);
+    res.json({ ok: true, deleted: true, note: 'Données personnelles supprimées. Les données de facturation sont conservées pour obligation légale.' });
+  });
+
   app.get('/api/me/stats', requireAuth, (req, res) => {
     const d = getDb();
     const uidv = req.user.id;
@@ -722,6 +799,7 @@ export function createApp() {
     const mode = req.body.mode || 'quiz';
     const duration = Math.min(3600, Math.max(0, Number(req.body.duration) || 0));
     const result = gradeAnswers(quiz, answers);
+    recordErrors(req.user.id, row.id, row.subject_id, result.details);
     // Anti-farming : répéter le même quiz le même jour rapporte de moins en moins d'XP.
     const priorToday = d.prepare("SELECT COUNT(*) AS c FROM quiz_attempts WHERE user_id = ? AND quiz_id = ? AND date(created_at) = date('now')").get(req.user.id, row.id).c;
     const grantedXp = priorToday >= 3 ? 0 : priorToday >= 1 ? Math.round(result.xp * 0.2) : result.xp;
@@ -1023,6 +1101,62 @@ export function createApp() {
     req.on('close', () => { clearInterval(ping); leaderboardClients.delete(res); });
   });
 
+  // ---------- apprentissage : révisions, carnet, planning, tableau de bord, recherche, favoris (étape 11) ----------
+  app.get('/api/reviews/due', requireAuth, (req, res) => res.json(dueReviews(req.user.id, { limit: req.query.limit })));
+  app.get('/api/reviews/stats', requireAuth, (req, res) => res.json(reviewStats(req.user.id)));
+  app.post('/api/reviews/:flashcardId', requireAuth, rateLimit(120, 60000), (req, res) => {
+    const r = scheduleReview(req.user.id, Number(req.params.flashcardId), String(req.body.rating || ''));
+    if (r.error) return res.status(400).json({ error: r.error, message: r.error === 'BAD_RATING' ? 'Note inconnue.' : 'Carte introuvable.' });
+    res.json(r);
+  });
+  app.get('/api/error-notebook', requireAuth, (req, res) => res.json(errorNotebook(req.user.id)));
+  app.post('/api/error-notebook/:id/resolve', requireAuth, (req, res) => {
+    const r = resolveError(req.user.id, Number(req.params.id));
+    if (r.error) return res.status(404).json({ error: 'NOT_FOUND', message: 'Entrée introuvable.' });
+    res.json(r);
+  });
+  app.get('/api/planner', requireAuth, (req, res) => res.json(getPlan(req.user.id)));
+  app.post('/api/planner', requireAuth, requireVerified, rateLimit(20, 60000), (req, res) => res.json(generatePlan(req.user.id, req.body)));
+  app.get('/api/dashboard', requireAuth, (req, res) => res.json(dashboard(req.user, { premium: isPremium(req.user) })));
+  app.get('/api/search', (req, res) => {
+    const user = getUserFromReq(req);
+    res.json(globalSearch(user, req.query.q, { subject: req.query.subject, difficulty: req.query.difficulty, type: req.query.type, premium: isPremium(user), limit: req.query.limit }));
+  });
+  app.get('/api/favorites', requireAuth, (req, res) => {
+    res.json({ favorites: getDb().prepare('SELECT * FROM favorites WHERE user_id = ? ORDER BY created_at DESC LIMIT 200').all(req.user.id) });
+  });
+  app.post('/api/favorites', requireAuth, rateLimit(60, 60000), (req, res) => {
+    const type = ['quiz', 'flashcard', 'video', 'course'].includes(req.body.targetType) ? req.body.targetType : null;
+    const targetId = String(req.body.targetId || '').slice(0, 60);
+    if (!type || !targetId) return res.status(400).json({ error: 'BAD_INPUT', message: 'Cible invalide.' });
+    getDb().prepare(`INSERT INTO favorites (user_id, target_type, target_id, note) VALUES (?, ?, ?, ?)
+      ON CONFLICT(user_id, target_type, target_id) DO UPDATE SET note = COALESCE(excluded.note, favorites.note)`)
+      .run(req.user.id, type, targetId, req.body.note ? String(req.body.note).slice(0, 500) : null);
+    res.status(201).json({ ok: true });
+  });
+  app.patch('/api/favorites/:id', requireAuth, (req, res) => {
+    const info = getDb().prepare('UPDATE favorites SET note = ? WHERE id = ? AND user_id = ?').run(req.body.note ? String(req.body.note).slice(0, 500) : null, Number(req.params.id), req.user.id);
+    if (info.changes === 0) return res.status(404).json({ error: 'NOT_FOUND', message: 'Favori introuvable.' });
+    res.json({ ok: true });
+  });
+  app.delete('/api/favorites/:id', requireAuth, (req, res) => {
+    getDb().prepare('DELETE FROM favorites WHERE id = ? AND user_id = ?').run(Number(req.params.id), req.user.id);
+    res.json({ ok: true });
+  });
+  app.get('/api/notifications/prefs', requireAuth, (req, res) => {
+    res.json({ prefs: req.user.notify_prefs ? JSON.parse(req.user.notify_prefs) : null, quietStart: req.user.quiet_start || null, quietEnd: req.user.quiet_end || null, frequency: req.user.notify_frequency || 'instant' });
+  });
+  app.patch('/api/notifications/prefs', requireAuth, (req, res) => {
+    const d = getDb();
+    const prefs = req.body.prefs ? JSON.stringify(req.body.prefs) : null;
+    const freq = ['instant', 'daily', 'weekly', 'off'].includes(req.body.frequency) ? req.body.frequency : null;
+    d.prepare(`UPDATE users SET notify_prefs = COALESCE(?, notify_prefs), quiet_start = COALESCE(?, quiet_start),
+      quiet_end = COALESCE(?, quiet_end), notify_frequency = COALESCE(?, notify_frequency) WHERE id = ?`)
+      .run(prefs, req.body.quietStart ?? null, req.body.quietEnd ?? null, freq, req.user.id);
+    const u = d.prepare('SELECT notify_prefs, quiet_start, quiet_end, notify_frequency FROM users WHERE id = ?').get(req.user.id);
+    res.json({ ok: true, prefs: u.notify_prefs ? JSON.parse(u.notify_prefs) : null, quietStart: u.quiet_start, quietEnd: u.quiet_end, frequency: u.notify_frequency });
+  });
+
   // ---------- équipes (étape 10) ----------
   const sendTeam = (res, result) => {
     if (result && result.error) return res.status(result.status || 400).json({ error: result.error, message: result.message });
@@ -1098,7 +1232,7 @@ export function createApp() {
     const existing = d.prepare('SELECT * FROM friendships WHERE (user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)').get(req.user.id, target.id, target.id, req.user.id);
     if (existing) return res.status(409).json({ error: 'EXISTS', message: 'Demande déjà envoyée.' });
     d.prepare("INSERT INTO friendships (user_id, friend_id, status) VALUES (?, ?, 'pending')").run(req.user.id, target.id);
-    d.prepare("INSERT INTO notifications (user_id, type, title, body) VALUES (?, 'friend', ?, ?)").run(target.id, 'Nouvelle demande d’ami 👥', `${req.user.first_name || 'Un élève'} veut devenir ton ami.`);
+    notifyUser(target.id, 'friend', 'Nouvelle demande d’ami 👥', `${req.user.first_name || 'Un élève'} veut devenir ton ami.`);
     res.status(201).json({ ok: true });
   });
 
@@ -1123,8 +1257,7 @@ export function createApp() {
     if (!friend) return res.status(404).json({ error: 'NOT_FOUND', message: 'Ami introuvable.' });
     const info = d.prepare('INSERT INTO friend_challenges (challenger_id, opponent_id, subject_id, difficulty, questions) VALUES (?, ?, ?, ?, ?)')
       .run(req.user.id, friendId, req.body.subjectId || null, req.body.difficulty || 'medium', Math.min(20, Math.max(3, Number(req.body.questions) || 5)));
-    d.prepare("INSERT INTO notifications (user_id, type, title, body) VALUES (?, 'friend', ?, ?)")
-      .run(friendId, 'Défi reçu ⚔️', `${req.user.first_name || 'Un ami'} te défie sur ${req.body.questions || 5} questions.`);
+    notifyUser(friendId, 'challenge', 'Défi reçu ⚔️', `${req.user.first_name || 'Un ami'} te défie sur ${req.body.questions || 5} questions.`);
     res.status(201).json({ id: info.lastInsertRowid, link: `/app.html#play?challenge=${info.lastInsertRowid}` });
   });
 
@@ -1223,6 +1356,7 @@ export function createApp() {
       .run(role ?? null, plan ?? null, isBanned === undefined ? null : (isBanned ? 1 : 0), subscriptionStatus ?? null, target.id);
     // Banning/unbanning revokes every existing token so the change is immediate.
     if (isBanned === true || isBanned === false) revokeSessions(target.id);
+    auditLog(req.user.id, 'admin_user_update', 'user', target.id, { role: role ?? null, plan: plan ?? null, isBanned: isBanned ?? null });
     res.json({ ok: true });
   });
 
@@ -1230,6 +1364,7 @@ export function createApp() {
     const d = getDb();
     if (Number(req.params.id) === req.user.id) return res.status(400).json({ error: 'SELF', message: 'Impossible de supprimer ton propre compte admin.' });
     d.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
+    auditLog(req.user.id, 'admin_user_delete', 'user', req.params.id, {});
     res.json({ ok: true });
   });
 
@@ -1292,6 +1427,72 @@ export function createApp() {
 
   app.get('/api/admin/reports', requireAdmin, (req, res) => {
     res.json({ reports: getDb().prepare('SELECT * FROM reports ORDER BY created_at DESC LIMIT 50').all() });
+  });
+
+  app.patch('/api/admin/reports/:id', requireAdmin, (req, res) => {
+    const status = ['open', 'resolved', 'rejected'].includes(req.body.status) ? req.body.status : null;
+    if (!status) return res.status(400).json({ error: 'BAD_STATUS', message: 'Statut inconnu.' });
+    const info = getDb().prepare("UPDATE reports SET status = ?, resolved_by = ?, resolved_at = datetime('now') WHERE id = ?")
+      .run(status, req.user.id, Number(req.params.id));
+    if (info.changes === 0) return res.status(404).json({ error: 'NOT_FOUND', message: 'Signalement introuvable.' });
+    auditLog(req.user.id, `report_${status}`, 'report', req.params.id, {});
+    res.json({ ok: true, status });
+  });
+
+  // ---------- administration des contenus, du support et diagnostics (étape 12) ----------
+  app.get('/api/admin/audit', requireAdmin, (req, res) => {
+    res.json({ logs: getDb().prepare('SELECT a.id, a.action, a.target_type, a.target_id, a.meta, a.created_at, u.email AS actor FROM audit_logs a LEFT JOIN users u ON u.id = a.actor_id ORDER BY a.id DESC LIMIT 200').all() });
+  });
+
+  app.get('/api/admin/diagnostics', requireAdmin, (req, res) => {
+    const d = getDb();
+    res.json({
+      mail: { provider: emailProvider(), configured: emailConfigured() },
+      stripe: { secretConfigured: stripeConfigured(), webhookSecretConfigured: !!process.env.STRIPE_WEBHOOK_SECRET, mode: process.env.STRIPE_MODE || 'both' },
+      youtube: { configured: youtubeConfigured() },
+      llm: { studyConfigured: !!(process.env.LLM_API_URL && process.env.LLM_API_KEY), videoAiConfigured: !!process.env.VIDEO_AI_API_KEY },
+      counts: {
+        unverifiedUsers: d.prepare('SELECT COUNT(*) AS c FROM users WHERE email_verified = 0 AND is_guest = 0 AND deleted_at IS NULL').get().c,
+        pendingReports: d.prepare("SELECT COUNT(*) AS c FROM reports WHERE status = 'open'").get().c,
+        stripeEvents: d.prepare('SELECT COUNT(*) AS c FROM stripe_events').get().c,
+        stripeEventsUnprocessed: d.prepare('SELECT COUNT(*) AS c FROM stripe_events WHERE processed = 0').get().c,
+        unpublishedContent: d.prepare("SELECT COUNT(*) AS c FROM quizzes WHERE status != 'published'").get().c,
+      },
+    });
+  });
+
+  app.get('/api/admin/curricula', requireAdmin, (req, res) => {
+    const rows = getDb().prepare('SELECT id, country_code, country_label, level, grade, track, domain, label, content_status, school_year, session, source_url, source_checked_at FROM curricula ORDER BY sort_order LIMIT 500').all();
+    res.json({ curricula: rows, statuses: ['published', 'partial', 'unavailable'] });
+  });
+
+  app.patch('/api/admin/curricula/:id', requireAdmin, (req, res) => {
+    const status = ['published', 'partial', 'unavailable'].includes(req.body.contentStatus) ? req.body.contentStatus : null;
+    if (!status) return res.status(400).json({ error: 'BAD_STATUS', message: 'Statut de contenu inconnu.' });
+    const info = getDb().prepare(`UPDATE curricula SET content_status = ?, school_year = COALESCE(?, school_year), session = COALESCE(?, session),
+      source_url = COALESCE(?, source_url), source_checked_at = COALESCE(?, source_checked_at) WHERE id = ?`)
+      .run(status, req.body.schoolYear ?? null, req.body.session ?? null, req.body.sourceUrl ?? null, req.body.sourceCheckedAt ?? null, Number(req.params.id));
+    if (info.changes === 0) return res.status(404).json({ error: 'NOT_FOUND', message: 'Programme introuvable.' });
+    auditLog(req.user.id, 'curriculum_updated', 'curricula', req.params.id, { contentStatus: status });
+    res.json({ ok: true, contentStatus: status });
+  });
+
+  // Prévisualisation d'un profil scolaire SANS usurper de compte réel.
+  app.post('/api/admin/preview-program', requireAdmin, (req, res) => {
+    const country = countryByLabel(req.body.country);
+    if (!country) return res.status(400).json({ error: 'BAD_INPUT', message: 'Pays inconnu.' });
+    const level = req.body.systemLevel || genericLevelToSystem(req.body.schoolLevel, country.system);
+    if (!level) return res.status(400).json({ error: 'BAD_INPUT', message: 'Niveau inconnu.' });
+    const row = findCurriculum({ countryCode: country.code, level, grade: req.body.grade || '', track: req.body.track || '', domain: req.body.domain || '' });
+    const serialized = serializeCurriculum(row);
+    const counts = row ? getDb().prepare("SELECT COUNT(*) AS c FROM quizzes WHERE curriculum_id = ? AND status = 'published'").get(row.id) : { c: 0 };
+    res.json({
+      curriculum: serialized,
+      examTabs: examTabsFor(row || serialized),
+      classContentCount: counts.c,
+      contentStatus: serialized?.contentStatus || 'unavailable',
+      needs: curriculumNeeds({ countryLabel: req.body.country, systemLevel: req.body.systemLevel, schoolLevel: req.body.schoolLevel, grade: req.body.grade, track: req.body.track, domain: req.body.domain, domainDetail: req.body.domainDetail }),
+    });
   });
 
   app.post('/api/reports', requireAuth, (req, res) => {
@@ -1380,6 +1581,7 @@ export function createApp() {
     if (type === 'quiz' && req.body.questions !== undefined) {
       d.prepare('UPDATE quizzes SET questions = ? WHERE id = ?').run(JSON.stringify(parseJsonArr(req.body.questions)), row.id);
     }
+    auditLog(req.user.id, status === 'published' ? 'content_published' : 'content_status_changed', type, row.id, { status, version });
     res.json({ ok: true, status, version });
   });
 
