@@ -267,13 +267,31 @@ Variables : `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_MONTHLY/
 - Rate limiting sur les routes d'authentification et de génération.
 - Aucune donnée bancaire stockée (Stripe Checkout + portail).
 
+## Audit secrets & intégrations (corrections)
+
+Voir `docs/AUDIT-2026-09.md`. Points clés :
+
+- **Aucun secret côté frontend** (vérifié automatiquement) ; tous les appels externes passent par le backend.
+- **Configuration centralisée** `src/config.js` + validation au démarrage (`getAppOrigin`, `validateConfig`).
+- **OpenAI corrigé** : API *chat completions*, base normalisée, **page de gestion rejetée**, alias
+  `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`LLM_MODEL`, erreurs explicites (`INVALID_KEY`, `QUOTA`, …).
+- **E-mail** : lecture `.env` durcie ; `POST /api/auth/send-verification` et
+  `GET /api/auth/verify-email` (lien **aléatoire, haché, temporaire, à usage unique**).
+- **Google** : callback via `getAppOrigin()` + **protection CSRF `state`**.
+- **Vidéo IA** : jobs `pending/processing/completed/failed` (`/api/ai/video`), fournisseur **non inventé**.
+- **Cours** : filtrage strict par programme/spécialités, `GET /api/courses`, `POST /api/ai/courses`,
+  **anti-doublon** par empreinte unique + similarité de titre.
+
 ## Tests
 
 ```bash
-npm test        # 327 assertions (suite API hermétique, clés externes vides)
+npm test        # 352 assertions (suite API hermétique, clés externes vides)
 npm run check   # garde-fou de déploiement
 npm run e2e     # parcours navigateur Playwright
 ```
+
+> La suite est **hermétique** : elle neutralise aussi `OPENAI_API_KEY`/`OPENAI_BASE_URL` et
+> `VIDEO_AI_*` pour ne jamais dépendre du réseau.
 
 ## Documentation
 

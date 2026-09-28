@@ -1,5 +1,7 @@
 import { generateStudy } from './content.js';
 import { retrieveResources, toCitations, buildRetrievalContext } from './retrieval.js';
+import { config } from './config.js';
+import { chatCompletion } from './openai.js';
 
 function sentences(text) {
   return String(text)
@@ -99,12 +101,16 @@ export function generateVideoScript({ input, subject = 'Général', difficulty =
 // AI Coach ("Coach Reviz") — connecté à la bibliothèque pédagogique (RAG)
 // ------------------------------------------------------------------
 
-/** Prompt système : rôle + sources balisées comme données non fiables. */
-export function buildCoachSystemPrompt({ program = null, resources = [] } = {}) {
+/** Prompt système : rôle + profil complet + sources balisées comme données non fiables. */
+export function buildCoachSystemPrompt({ program = null, resources = [], profile = null } = {}) {
   const context = buildRetrievalContext(resources);
   return [
     'Tu es Coach Reviz, un tuteur bienveillant pour des collégiens, lycéens et étudiants francophones.',
     program ? `L’élève suit le programme : ${program.label} (${program.country_label}), niveau ${program.level}.` : 'Le programme de l’élève n’est pas défini.',
+    profile ? `Profil : niveau ${profile.level || 'n.c.'}${profile.grade ? `, classe ${profile.grade}` : ''}${profile.track ? `, voie ${profile.track}` : ''}${profile.specialties?.length ? `, spécialités ${profile.specialties.join(', ')}` : ''}${profile.chapter ? `, chapitre « ${profile.chapter} »` : ''}${profile.subject ? `, matière ${profile.subject}` : ''}.` : null,
+    profile && typeof profile.progress === 'number' ? `Progression : ${profile.progress}% et ${profile.streak || 0} jour(s) de série.` : null, 
+    'Adapte le vocabulaire et la profondeur au niveau réel de l’élève.',
+    'Tu peux : expliquer, générer des exercices ciblés, expliquer une erreur, résumer, produire une fiche de révision, un quiz ou des flashcards.',
     'Réponds en français, de façon claire et structurée, en adaptant le vocabulaire et la profondeur au niveau de l’élève.',
     'Quand tu t’appuies sur les sources fournies, cite leurs titres exacts et propose un lien interne.',
     'Distingue explicitement une explication générale d’une réponse fondée sur la bibliothèque de l’élève.',
@@ -161,19 +167,38 @@ export function localCoachReply(messages, { program = null, resources = [], retr
  * Dans tous les cas, la réponse est enrichie des sources récupérées dans le
  * strict périmètre du programme et des droits de l'utilisateur.
  */
-export async function askCoach(user, messages, { premium = false } = {}) {
+export async function askCoach(user, messages, { premium = false, context = {} } = {}) {
   const history = messages.slice(-12).map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '').slice(0, 4000) }));
   const lastUser = [...messages].reverse().find((m) => m.role === 'user')?.content || '';
   const retrieval = retrieveResources(user, lastUser, { premium });
   const resources = retrieval.resources || [];
   const sources = enrichCitations(resources);
   const grounded = resources.length > 0;
-  const system = buildCoachSystemPrompt({ program: retrieval.curriculum, resources });
+  const best = resources[0] || null;
+  // Contexte complet transmis au coach (profil, classe, voie, spécialités, matière, chapitre, progression).
+  const profile = {
+    level: user.system_level || user.school_level || null,
+    grade: user.grade || null,
+    track: user.track || null,
+    specialties: Array.isArray(user.specialties) ? user.specialties : [],
+    subject: context.subject || best?.subject || null,
+    chapter: context.chapter || best?.chapter || null,
+    progress: Number.isFinite(Number(user.best_score)) ? Number(user.best_score) : undefined,
+    streak: user.streak || 0,
+  };
+  const system = buildCoachSystemPrompt({ program: retrieval.curriculum, resources, profile });
   const fallback = () => ({ ...localCoachReply(messages, { program: retrieval.curriculum, resources, retrievalReason: retrieval.reason }), sources, grounded });
 
   const provider = (user.coach_provider || '').toLowerCase();
   const key = user.coach_api_key;
   const model = user.coach_model || '';
+
+  // Clé serveur : utilisée quand l'élève n'a pas branché sa propre clé (le navigateur ne voit rien).
+  if ((!key || !provider) && config.ai.configured) {
+    const result = await chatCompletion({ messages: [{ role: 'system', content: system }, ...history], maxTokens: 1024, temperature: 0.4 });
+    if (result.ok) return { role: 'assistant', content: result.content, provider: 'openai-server', sources, grounded };
+    return { ...fallback(), warning: result.error.message, aiError: result.error.code };
+  }
   if (!key || !provider) return fallback();
   try {
     if (provider === 'openai' || provider === 'custom') {

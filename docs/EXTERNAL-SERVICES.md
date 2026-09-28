@@ -44,9 +44,29 @@ et aucun droit n'est accordé sans webhook.
 `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`, **ou** `GOOGLE_OAUTH_CLIENT_JSON`.
 URI de redirection : `{APP_ORIGIN}/api/auth/google/callback`.
 
-## 4. IA — Étude (optionnel)
+## 4. IA serveur — Étude, Coach et génération de cours (optionnel)
 
-`LLM_API_URL` + `LLM_API_KEY` (+ `LLM_PROVIDER`). Sans clé : générateur local déterministe.
+Variables (l'une suffit pour la clé) :
+
+| Variable | Rôle |
+|---|---|
+| `OPENAI_API_KEY` | clé OpenAI (prioritaire) |
+| `LLM_API_KEY` | alias de la clé |
+| `OPENAI_BASE_URL` / `LLM_API_URL` | **base d'API** (ex. `https://api.openai.com/v1`) |
+| `LLM_MODEL` | modèle (défaut `gpt-4o-mini`) |
+| `LLM_PROVIDER` | libellé du fournisseur |
+
+⚠️ `LLM_API_URL` doit être une **base d'API**. Une **page de gestion**
+(`platform.openai.com/api-keys`) est **ignorée** (base par défaut `api.openai.com/v1` utilisée).
+
+Sans clé : générateur local déterministe (Étude) et moteur local sourcé (Coach) ; la génération de
+cours répond `503 AI_NOT_CONFIGURED`.
+
+Erreurs renvoyées : `KEY_MISSING`, `INVALID_KEY`, `QUOTA`, `BAD_MODEL`, `UNAVAILABLE`,
+`BAD_RESPONSE`, `PROVIDER_ERROR`.
+
+Endpoints : `POST /api/ai/coach` (contexte complet : niveau, classe, voie, spécialités, matière,
+chapitre, progression, historique), `GET /api/courses`, `POST /api/ai/courses`.
 
 ## 5. Vidéo IA premium
 

@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { getDb, addXp, levelForXp } from './db.js';
+import { config } from './config.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const COOKIE = 'reviqo_token';
@@ -223,18 +224,7 @@ export function createGuest() {
  * in GOOGLE_OAUTH_CLIENT_JSON ({"web":{"client_id":...,"client_secret":...}}).
  */
 export function googleCreds() {
-  const jsonVar = process.env.GOOGLE_OAUTH_CLIENT_JSON;
-  if (jsonVar) {
-    try {
-      const parsed = JSON.parse(jsonVar);
-      const cfg = parsed.web || parsed.installed || parsed;
-      if (cfg.client_id && cfg.client_secret) return { id: cfg.client_id, secret: cfg.client_secret };
-    } catch {
-      const parts = jsonVar.split(/[\s|,]+/).map((s) => s.trim()).filter(Boolean);
-      if (parts.length >= 2) return { id: parts[0], secret: parts[1] };
-    }
-  }
-  return { id: process.env.GOOGLE_CLIENT_ID || '', secret: process.env.GOOGLE_CLIENT_SECRET || '' };
+  return { id: config.google.clientId, secret: config.google.clientSecret };
 }
 
 export const GOOGLE = {
@@ -242,7 +232,7 @@ export const GOOGLE = {
     const c = googleCreds();
     return !!(c.id && c.secret);
   },
-  authUrl(redirectUri) {
+  authUrl(redirectUri, state) {
     const params = new URLSearchParams({
       client_id: googleCreds().id,
       redirect_uri: redirectUri,
@@ -251,6 +241,7 @@ export const GOOGLE = {
       access_type: 'offline',
       prompt: 'select_account',
     });
+    if (state) params.set('state', state);
     return `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
   },
   async exchange(code, redirectUri) {

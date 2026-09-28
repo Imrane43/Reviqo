@@ -325,9 +325,23 @@ API (UI minimale à finaliser à l’étape 12 si besoin).
 
 ---
 
+## 🔎 Audit & correctifs (demande utilisateur)
+
+- **Secrets** : aucun secret/frontend, aucun appel direct aux fournisseurs depuis le navigateur — vérifié automatiquement.
+- **Configuration centralisée** (`src/config.js`) + validation au démarrage + `getAppOrigin()`.
+- **OpenAI corrigé** : `/chat/completions`, base normalisée, **page de gestion rejetée**, alias de clés, erreurs utiles.
+- **Coach** : clé serveur en repli, contexte complet, endpoint `POST /api/ai/coach`.
+- **E-mail** : `.env` robuste, `POST /api/auth/send-verification`, `GET /api/auth/verify-email` (token aléatoire haché, temporaire, usage unique).
+- **Google** : `state` CSRF + callback centralisé.
+- **Vidéo IA** : jobs `/api/ai/video` + `/api/ai/video/:id`, fournisseur **non inventé**.
+- **Cours** : `getPersonalizedCourses`, génération structurée, **anti-doublon**.
+- Détails : `docs/AUDIT-2026-09.md`.
+
+---
+
 ## Tests
 
-- `npm test` → **327/327** assertions (95 d'origine + étapes 2 à 12).
+- `npm test` → **352/352** assertions (95 d'origine + étapes 2 à 12 + audit).
 - `npm run check` → garde-fou anti-régression de déploiement (modules front-end jamais dans `src/`).
 - `npm run e2e` → parcours navigateur Playwright (nécessite les navigateurs).
 

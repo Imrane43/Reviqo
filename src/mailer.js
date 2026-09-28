@@ -1,37 +1,46 @@
 /**
- * Pluggable transactional email.
+ * Envoi d'e-mails transactionnels.
  *
- * Providers (first one configured wins):
- *   - RESEND_API_KEY      -> https://resend.com
- *   - SENDGRID_API_KEY    -> https://sendgrid.com
- *   - SMTP_URL            -> any SMTP server (requires `nodemailer`)
- *
- * If none is configured, `sendMail` returns { delivered: false, reason: 'not_configured' }
- * and the caller decides what to do. We NEVER log message bodies, so verification
- * codes can never leak into the logs.
+ * Fournisseur : Resend, SendGrid ou SMTP (le premier configuré gagne).
+ * - Les clés sont lues via la configuration centralisée (assainies : sans
+ *   espace ni retour à la ligne parasite).
+ * - Un corps de message n'est JAMAIS journalisé (donc aucun code secret).
+ * - On renvoie toujours une issue explicite : { delivered, provider, reason }.
  */
-const FROM_NAME = process.env.MAIL_FROM_NAME || 'REVIQO';
-const FROM_EMAIL = process.env.MAIL_FROM_EMAIL || 'no-reply@reviqo.app';
-const FROM = `${FROM_NAME} <${FROM_EMAIL}>`;
+import { config } from './config.js';
 
 export function emailProvider() {
-  if (process.env.RESEND_API_KEY) return 'resend';
-  if (process.env.SENDGRID_API_KEY) return 'sendgrid';
-  if (process.env.SMTP_URL) return 'smtp';
-  return null;
+  return config.email.provider;
 }
 
 export function emailConfigured() {
-  return !!emailProvider();
+  return config.email.configured;
+}
+
+/** Avertissement de format (jamais de valeur affichée). */
+export function validateEmailProvider() {
+  const warnings = [];
+  if (config.email.provider === 'resend' && !/^re_/.test(config.email.resendKey)) {
+    warnings.push('RESEND_API_KEY ne ressemble pas à une clé Resend (préfixe attendu : « re_ »).');
+  }
+  if (config.email.provider === 'resend' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(config.email.fromEmail)) {
+    warnings.push('MAIL_FROM_EMAIL n’est pas une adresse valide.');
+  }
+  return warnings;
 }
 
 async function sendViaResend({ to, subject, text, html }) {
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.RESEND_API_KEY}` },
-    body: JSON.stringify({ from: FROM, to: [to], subject, text, html }),
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.email.resendKey}` },
+    body: JSON.stringify({ from: config.email.from, to: [to], subject, text, html }),
   });
-  if (!res.ok) throw new Error(`resend HTTP ${res.status}`);
+  if (!res.ok) {
+    let detail = '';
+    try { const body = await res.json(); detail = body?.message || body?.error?.message || ''; } catch { /* ignore */ }
+    throw new Error(`resend HTTP ${res.status}${detail ? ` : ${detail}` : ''}`);
+  }
+  return true;
 }
 
 async function sendViaSendgrid({ to, subject, text, html }) {
@@ -39,15 +48,16 @@ async function sendViaSendgrid({ to, subject, text, html }) {
   if (html) content.push({ type: 'text/html', value: html });
   const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.SENDGRID_API_KEY}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.email.sendgridKey}` },
     body: JSON.stringify({
       personalizations: [{ to: [{ email: to }] }],
-      from: { email: FROM_EMAIL, name: FROM_NAME },
+      from: { email: config.email.fromEmail, name: config.email.fromName },
       subject,
       content,
     }),
   });
   if (!res.ok) throw new Error(`sendgrid HTTP ${res.status}`);
+  return true;
 }
 
 async function sendViaSmtp({ to, subject, text, html }) {
@@ -55,14 +65,15 @@ async function sendViaSmtp({ to, subject, text, html }) {
   try {
     nodemailer = await import('nodemailer');
   } catch {
-    throw new Error('nodemailer is not installed (required for SMTP_URL)');
+    throw new Error('nodemailer n’est pas installé (nécessaire pour SMTP_URL)');
   }
-  const transporter = nodemailer.createTransport(process.env.SMTP_URL);
-  await transporter.sendMail({ from: FROM, to, subject, text, html });
+  const transporter = nodemailer.createTransport(config.email.smtpUrl);
+  await transporter.sendMail({ from: config.email.from, to, subject, text, html });
+  return true;
 }
 
 export async function sendMail(message) {
-  const provider = emailProvider();
+  const provider = config.email.provider;
   if (!provider) return { delivered: false, reason: 'not_configured' };
   try {
     if (provider === 'resend') await sendViaResend(message);
@@ -70,10 +81,10 @@ export async function sendMail(message) {
     else await sendViaSmtp(message);
     return { delivered: true, provider };
   } catch (err) {
-    // Log only the provider and the error message — never the body.
-    console.error(`[mailer] ${provider} send failed: ${err.message}`);
-    return { delivered: false, reason: 'send_failed', provider };
+    // On journalise le fournisseur et l'erreur — jamais le corps du message.
+    console.error(`[mailer] échec ${provider} : ${err.message}`);
+    return { delivered: false, reason: 'send_failed', provider, error: err.message };
   }
 }
 
-export const MAIL_FROM = FROM;
+export const MAIL_FROM = config.email.from;

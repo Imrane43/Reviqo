@@ -1,4 +1,6 @@
 import { getDb, addXp } from './db.js';
+import { config } from './config.js';
+import { chatCompletion } from './openai.js';
 
 const STOP = new Set(['le', 'la', 'les', 'un', 'une', 'des', 'de', 'du', 'et', 'est', 'sont', 'que', 'qui', 'dans', 'pour', 'avec', 'sur', 'par', 'au', 'aux', 'en', 'ce', 'cette', 'il', 'elle', 'on', 'nous', 'vous', 'ils', 'elles', 'a', 'the', 'of', 'to', 'and', 'is', 'are', 'in', 'for', 'with', 'on', 'as', 'at', 'be']);
 
@@ -89,18 +91,23 @@ export function generateStudy({ input, subject = 'Général', difficulty = 'medi
 }
 
 export async function generateWithLLM(args) {
-  // Optional adapter: set LLM_API_URL + LLM_API_KEY to plug a real provider.
-  if (!process.env.LLM_API_URL || !process.env.LLM_API_KEY) return generateStudy(args);
+  // Générateur local par défaut ; l'IA serveur n'est utilisée que si elle est configurée.
+  const local = generateStudy(args);
+  if (!config.ai.configured) return local;
+  const result = await chatCompletion({
+    messages: [
+      { role: 'system', content: 'Tu produis une fiche d’étude structurée (résumé, points clés, flashcards, quiz) à partir du contenu fourni. Réponds en JSON strict.' },
+      { role: 'user', content: JSON.stringify(args) },
+    ],
+    json: true,
+    maxTokens: 1200,
+  });
+  if (!result.ok) return { ...local, provider: 'reviqo-local', aiError: result.error.code, warning: result.error.message };
   try {
-    const res = await fetch(process.env.LLM_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.LLM_API_KEY}` },
-      body: JSON.stringify(args),
-    });
-    if (!res.ok) throw new Error('LLM error');
-    return await res.json();
+    const parsed = JSON.parse(result.content);
+    return { ...local, ...parsed, provider: config.ai.provider };
   } catch {
-    return generateStudy(args);
+    return { ...local, aiError: 'BAD_RESPONSE', warning: 'Réponse IA inexploitable — génération locale utilisée.' };
   }
 }
 

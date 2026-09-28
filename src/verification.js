@@ -71,17 +71,60 @@ export function issueVerificationCode(user, { force = false } = {}) {
   return { code, expiresAt: expires, ttlMinutes: CODE_TTL_MINUTES };
 }
 
-export async function sendVerificationCode(user, code) {
+export async function sendVerificationCode(user, code, link = null) {
+  const linkBlock = link
+    ? { text: `\n\nOu clique sur ce lien de vérification :\n${link}\n`, html: `<p><a href="${link}">Vérifier mon adresse e-mail</a></p>` }
+    : { text: '', html: '' };
   return sendMail({
     to: user.email,
     subject: 'Ton code de vérification REVIQO',
-    text: `Ton code de vérification est : ${code}\n\nIl expire dans ${CODE_TTL_MINUTES} minutes et ne fonctionne qu'une seule fois.\nNe le partage avec personne.\n\n— REVIQO`,
+    text: `Ton code de vérification est : ${code}\n\nIl expire dans ${CODE_TTL_MINUTES} minutes et ne fonctionne qu'une seule fois.${linkBlock.text}Ne le partage avec personne.\n\n— REVIQO`,
     html: `<div style="font-family:system-ui,sans-serif">
       <p>Ton code de vérification :</p>
       <p style="font-size:26px;font-weight:700;letter-spacing:6px">${code}</p>
+      ${linkBlock.html}
       <p style="color:#666">Il expire dans ${CODE_TTL_MINUTES} minutes et ne fonctionne qu'une seule fois. Ne le partage avec personne.</p>
     </div>`,
   });
+}
+
+/* ---------------- vérification par lien (token) ---------------- */
+
+const LINK_TTL_MINUTES = Number(process.env.VERIFY_LINK_TTL_MINUTES || 30);
+
+function hashToken(token) {
+  return crypto.createHmac('sha256', SECRET).update(String(token)).digest('hex');
+}
+
+/** Génère un token de vérification aléatoire (usage unique), stocké haché. */
+export function issueVerificationToken(user, { ttlMinutes = LINK_TTL_MINUTES } = {}) {
+  const token = crypto.randomBytes(32).toString('base64url');
+  const expires = new Date(Date.now() + ttlMinutes * 60000).toISOString();
+  getDb().prepare('UPDATE users SET verify_token_hash = ?, verify_token_expires = ? WHERE id = ?')
+    .run(hashToken(token), expires, user.id);
+  return { token, expiresAt: expires, ttlMinutes };
+}
+
+/** Valide un token de vérification (expiration + usage unique + comparaison sûre). */
+export function verifyEmailToken(email, token) {
+  const d = getDb();
+  const user = d.prepare('SELECT * FROM users WHERE email_canon = ?').get(String(email || '').trim().toLowerCase());
+  if (!user) return { error: 'INVALID_TOKEN' };
+  // Compte déjà vérifié : un rejeu est traité comme « déjà vérifié », pas comme un token invalide.
+  if (user.email_verified) return { ok: true, alreadyVerified: true, user };
+  if (!user.verify_token_hash || !token) return { error: 'INVALID_TOKEN' };
+  if (!user.verify_token_expires || new Date(user.verify_token_expires).getTime() < Date.now()) return { error: 'EXPIRED' };
+  const provided = Buffer.from(hashToken(token));
+  const stored = Buffer.from(user.verify_token_hash);
+  if (provided.length !== stored.length || !crypto.timingSafeEqual(provided, stored)) return { error: 'INVALID_TOKEN' };
+  const info = d.prepare(`UPDATE users SET email_verified = 1, verify_token_hash = NULL, verify_token_expires = NULL,
+    verify_hash = NULL, verify_expires = NULL WHERE id = ? AND email_verified = 0`).run(user.id);
+  if (info.changes !== 1) return { ok: true, alreadyVerified: true, user };
+  return { ok: true, user: d.prepare('SELECT * FROM users WHERE id = ?').get(user.id) };
+}
+
+export function verificationLink(origin, email, token) {
+  return `${String(origin || '').replace(/\/+$/, '')}/api/auth/verify-email?email=${encodeURIComponent(email)}&token=${encodeURIComponent(token)}`;
 }
 
 /** Validate a code and consume it atomically. */

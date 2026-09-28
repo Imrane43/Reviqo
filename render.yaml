@@ -50,6 +50,16 @@ services:
         sync: false
       - key: ADS_ENABLED
         value: "true"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_BASE_URL
+        sync: false
+      - key: LLM_MODEL
+        value: gpt-4o-mini
+      - key: VIDEO_AI_API_URL
+        sync: false
+      - key: VIDEO_AI_MODEL
+        sync: false
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: GOOGLE_CLIENT_SECRET

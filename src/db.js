@@ -469,6 +469,53 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
+
+-- Cours personnalisés (génération IA, anti-doublon via empreinte unique) et jobs vidéo IA.
+CREATE TABLE IF NOT EXISTS courses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  curriculum_id INTEGER,
+  subject_id INTEGER,
+  level TEXT,
+  grade TEXT,
+  track TEXT,
+  specialties TEXT NOT NULL DEFAULT '[]',
+  chapter TEXT,
+  title TEXT NOT NULL,
+  objective TEXT,
+  prerequisites TEXT NOT NULL DEFAULT '[]',
+  sections TEXT NOT NULL DEFAULT '[]',
+  examples TEXT NOT NULL DEFAULT '[]',
+  method TEXT,
+  common_mistakes TEXT NOT NULL DEFAULT '[]',
+  exercise TEXT,
+  correction TEXT,
+  quiz TEXT NOT NULL DEFAULT '[]',
+  summary TEXT,
+  flashcards TEXT NOT NULL DEFAULT '[]',
+  difficulty TEXT NOT NULL DEFAULT 'medium',
+  language TEXT NOT NULL DEFAULT 'fr',
+  fingerprint TEXT,
+  source TEXT NOT NULL DEFAULT 'ai',
+  status TEXT NOT NULL DEFAULT 'draft',
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_courses_fingerprint ON courses(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_courses_scope ON courses(curriculum_id, status);
+CREATE TABLE IF NOT EXISTS video_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  curriculum_id INTEGER,
+  query TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'none',
+  status TEXT NOT NULL DEFAULT 'pending',
+  provider_job_id TEXT,
+  result TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_video_jobs_user ON video_jobs(user_id, status);
 `;
 
 const SUBJECTS = [
@@ -629,6 +676,8 @@ function runMigrations() {
   ensureColumn('users', 'token_version', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('users', 'reset_hash', 'TEXT');
   ensureColumn('users', 'verify_deadline', 'TEXT');
+  ensureColumn('users', 'verify_token_hash', 'TEXT');
+  ensureColumn('users', 'verify_token_expires', 'TEXT');
   // Étape 4 — profil scolaire et référentiel des programmes.
   ensureColumn('users', 'system', 'TEXT');
   ensureColumn('users', 'system_level', 'TEXT');

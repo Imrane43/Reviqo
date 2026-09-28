@@ -14,6 +14,10 @@ process.env.GOOGLE_CLIENT_ID = '';
 process.env.GOOGLE_CLIENT_SECRET = '';
 process.env.LLM_API_URL = '';
 process.env.LLM_API_KEY = '';
+process.env.OPENAI_API_KEY = '';
+process.env.OPENAI_BASE_URL = '';
+process.env.VIDEO_AI_API_KEY = '';
+process.env.VIDEO_AI_API_URL = '';
 process.env.ADMIN_EMAIL = 'imraneanbar39@gmail.com';
 process.env.ADMIN_PASSWORD = 'jsusuuzuzzis.2003@!';
 // Le harnais hermétique partage une seule IP : on désactive les limites de débit

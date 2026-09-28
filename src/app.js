@@ -1,5 +1,6 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -12,12 +13,16 @@ import {
 } from './auth.js';
 import {
   issueVerificationCode, sendVerificationCode, verifyCode, verificationRequired,
-  codeTtlMinutes, resendSeconds,
+  codeTtlMinutes, resendSeconds, issueVerificationToken, verifyEmailToken, verificationLink,
 } from './verification.js';
+import { getAppOrigin, config, safeSummary, validateConfig } from './config.js';
+import { getPersonalizedCourses, generateCourse, fingerprint, findSimilarCourse } from './courses.js';
+import { createVideoJob, getVideoJob, submitVideoJob, refreshVideoJob, listVideoJobs } from './videoai.js';
+import { validateEmailProvider } from './mailer.js';
 import { sendMail, emailProvider, emailConfigured } from './mailer.js';
 import { generateWithLLM, gradeAnswers, checkAchievements, progressDailyChallenge, getDailyBoard } from './content.js';
 import { generateVideoScript, askCoach } from './coach.js';
-import { findVideosForRequest, youtubeConfigured } from './video.js';
+import { findVideosForRequest, youtubeConfigured, analyzeVideoRequest } from './video.js';
 import {
   dueReviews, reviewStats, scheduleReview, errorNotebook, resolveError, recordErrors,
   generatePlan, getPlan, globalSearch, dashboard,
@@ -59,8 +64,9 @@ function rateLimit(max, windowMs) {
   };
 }
 
+/** Origine publique centralisée (vérification e-mail, OAuth, redirections, liens). */
 function origin(req) {
-  return process.env.APP_ORIGIN || `${req.protocol}://${req.get('host')}`;
+  return getAppOrigin(req);
 }
 
 /** Journalise une action sensible (ne casse jamais l'action en cas d'échec). */
@@ -253,16 +259,19 @@ function recomputeCurriculum(d, userId) {
 }
 
 /** Issue a fresh code and try to deliver it. Never leaks the code in production. */
-async function issueAndSend(user) {
+async function issueAndSend(user, req) {
   const issued = issueVerificationCode(user, { force: true });
   if (issued.error) return { emailSent: false, resendAfter: issued.retryAfter || 0, codeTtlMinutes: codeTtlMinutes() };
-  const mail = await sendVerificationCode(user, issued.code);
+  const issuedToken = issueVerificationToken(user);
+  const link = verificationLink(origin(req), user.email, issuedToken.token);
+  const mail = await sendVerificationCode(user, issued.code, link);
   const payload = { emailSent: !!mail.delivered, emailProvider: mail.provider || null, codeTtlMinutes: codeTtlMinutes(), resendAfter: resendSeconds() };
   if (!mail.delivered) {
     payload.emailError = mail.reason || 'send_failed';
     if (process.env.NODE_ENV !== 'production') {
       payload.devVerificationCode = issued.code;
-      payload.devNote = 'Mode démo : code affiché directement (aucun e-mail envoyé).'; 
+      payload.devVerificationLink = link;
+      payload.devNote = 'Mode démo : code et lien affichés directement (aucun e-mail envoyé).';
     }
   }
   return payload;
@@ -365,7 +374,7 @@ export function createApp() {
       throw e;
     }
     const user = d.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
-    const mail = await issueAndSend(user);
+    const mail = await issueAndSend(user, req);
     setAuthCookie(res, user);
     res.status(201).json({ user: publicUser(user), verifyRequired: verificationRequired(), ...mail });
   });
@@ -406,10 +415,50 @@ export function createApp() {
     if (issued.error === 'RESEND_TOO_SOON') {
       return res.status(429).json({ error: 'RESEND_TOO_SOON', message: 'Patiente avant de demander un nouveau code.', retryAfter: issued.retryAfter });
     }
-    const mail = await sendVerificationCode(user, issued.code);
+    const issuedToken = issueVerificationToken(user);
+    const link = verificationLink(origin(req), user.email, issuedToken.token);
+    const mail = await sendVerificationCode(user, issued.code, link);
     payload.emailSent = !!mail.delivered;
-    if (!mail.delivered && process.env.NODE_ENV !== 'production') payload.devVerificationCode = issued.code;
+    if (!mail.delivered && process.env.NODE_ENV !== 'production') { payload.devVerificationCode = issued.code; payload.devVerificationLink = link; }
     res.json(payload);
+  });
+
+  // Envoi d'un e-mail de vérification (lien + code), usage unique et temporaire.
+  app.post('/api/auth/send-verification', rateLimit(10, 60000), rateLimitEmail(5, 60000), async (req, res) => {
+    const d = getDb();
+    const email = normalizeEmail(req.body.email);
+    const user = d.prepare('SELECT * FROM users WHERE email_canon = ?').get(email);
+    const payload = { ok: true, message: 'Si un compte non vérifié existe, un e-mail de vérification a été envoyé.' };
+    if (!user || user.email_verified) return res.json(payload);
+    const issued = issueVerificationCode(user, { force: false });
+    if (issued.error === 'RESEND_TOO_SOON') return res.status(429).json({ error: 'RESEND_TOO_SOON', message: 'Patiente avant de demander un nouvel envoi.', retryAfter: issued.retryAfter });
+    const issuedToken = issueVerificationToken(user);
+    const link = verificationLink(origin(req), user.email, issuedToken.token);
+    const mail = await sendVerificationCode(user, issued.code, link);
+    payload.emailSent = !!mail.delivered;
+    payload.provider = mail.provider || null;
+    if (!mail.delivered) {
+      payload.emailError = mail.reason || 'send_failed';
+      if (process.env.NODE_ENV !== 'production') { payload.devVerificationCode = issued.code; payload.devVerificationLink = link; }
+    }
+    res.json(payload);
+  });
+
+  // Vérification par lien : GET /api/auth/verify-email?email=...&token=...
+  app.get('/api/auth/verify-email', (req, res) => {
+    const email = normalizeEmail(req.query.email);
+    const token = String(req.query.token || '');
+    const result = verifyEmailToken(email, token);
+    if (req.query.format === 'json') {
+      if (result.error) return res.status(result.error === 'EXPIRED' ? 410 : 400).json({ error: result.error, message: result.error === 'EXPIRED' ? 'Lien expiré.' : 'Lien invalide.' });
+      if (result.user) setAuthCookie(res, result.user);
+      return res.json({ ok: true, alreadyVerified: !!result.alreadyVerified });
+    }
+    if (result.error === 'EXPIRED') return res.redirect('/auth.html?error=verify_expired');
+    if (result.error) return res.redirect('/auth.html?error=verify_invalid');
+    const user = result.user;
+    if (user) setAuthCookie(res, user);
+    res.redirect(user && !user.onboarding_done ? '/auth.html#onboarding' : '/app.html?verified=1');
   });
 
   app.post('/api/auth/login', rateLimit(20, 60000), (req, res) => {
@@ -456,7 +505,7 @@ export function createApp() {
       throw e;
     }
     const user = d.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
-    const mail = await issueAndSend(user);
+    const mail = await issueAndSend(user, req);
     setAuthCookie(res, user);
     res.json({ user: publicUser(user), verifyRequired: verificationRequired(), ...mail });
   });
@@ -526,12 +575,18 @@ export function createApp() {
 
   app.get('/api/auth/google', (req, res) => {
     if (!GOOGLE.configured) return res.redirect('/auth.html?error=google_not_configured');
-    res.redirect(GOOGLE.authUrl(`${origin(req)}/api/auth/google/callback`));
+    // Protection CSRF : `state` aléatoire stocké en cookie httpOnly et vérifié au retour.
+    const state = crypto.randomBytes(16).toString('base64url');
+    res.cookie('reviqo_oauth_state', state, { httpOnly: true, sameSite: 'lax', maxAge: 10 * 60 * 1000, path: '/' });
+    res.redirect(GOOGLE.authUrl(`${origin(req)}/api/auth/google/callback`, state));
   });
 
   app.get('/api/auth/google/callback', async (req, res) => {
     try {
       if (!GOOGLE.configured) return res.redirect('/auth.html?error=google_not_configured');
+      const expectedState = req.cookies?.reviqo_oauth_state;
+      res.clearCookie('reviqo_oauth_state', { path: '/' });
+      if (!expectedState || !req.query.state || req.query.state !== expectedState) return res.redirect('/auth.html?error=google_state');
       if (req.query.error) return res.redirect('/auth.html?error=google_denied');
       const tokens = await GOOGLE.exchange(req.query.code, `${origin(req)}/api/auth/google/callback`);
       const profile = await GOOGLE.profile(tokens.access_token);
@@ -1001,7 +1056,7 @@ export function createApp() {
     d.prepare('INSERT INTO coach_usage (user_id, day, count) VALUES (?, ?, 1) ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1').run(req.user.id, day);
     const used = d.prepare('SELECT count FROM coach_usage WHERE user_id = ? AND day = ?').get(req.user.id, day).count;
     if (used > limit) return res.status(429).json({ error: 'COACH_QUOTA', message: `Limite quotidienne du Coach atteinte (${limit} messages). Réessaie demain.`, quota: { used, limit } });
-    const reply = await askCoach(req.user, messages, { premium: isPremium(req.user) });
+    const reply = await askCoach(req.user, messages, { premium: isPremium(req.user), context: { subjectId: req.body.subjectId || null, chapter: req.body.chapter || null } });
     res.json({ reply, quota: { used, limit } });
   });
 
@@ -1118,6 +1173,68 @@ export function createApp() {
   app.get('/api/planner', requireAuth, (req, res) => res.json(getPlan(req.user.id)));
   app.post('/api/planner', requireAuth, requireVerified, rateLimit(20, 60000), (req, res) => res.json(generatePlan(req.user.id, req.body)));
   app.get('/api/dashboard', requireAuth, (req, res) => res.json(dashboard(req.user, { premium: isPremium(req.user) })));
+
+  // ---------- cours personnalisés + génération IA (priorités 9 à 12) ----------
+  app.get('/api/courses', (req, res) => {
+    const user = getUserFromReq(req);
+    res.json(getPersonalizedCourses(user, { subjectSlug: req.query.subject, chapter: req.query.chapter, difficulty: req.query.difficulty, limit: req.query.limit }));
+  });
+  app.post('/api/ai/courses', requireAuth, requireVerified, rateLimit(10, 60000), async (req, res) => {
+    const result = await generateCourse(req.user, { subjectSlug: req.body.subject, chapter: req.body.chapter, difficulty: req.body.difficulty, angle: req.body.angle });
+    if (result.error) {
+      const status = result.error === 'AI_NOT_CONFIGURED' ? 503
+        : (result.error === 'NO_PROGRAM' || result.error === 'NO_SUBJECT') ? 400
+          : result.error === 'PROGRAM_UNAVAILABLE' ? 422
+            : result.error === 'DUPLICATE' ? 409
+              : result.error === 'QUOTA' ? 429 : 502;
+      return res.status(status).json({ error: result.error, message: result.message });
+    }
+    res.status(201).json(result);
+  });
+
+  // ---------- Coach IA (endpoint dédié, clé jamais côté navigateur) ----------
+  app.post('/api/ai/coach', requireAuth, requireVerified, rateLimit(40, 60000), async (req, res) => {
+    if (!isPremium(req.user)) return res.status(402).json({ error: 'PREMIUM_REQUIRED', message: 'Le Coach IA est réservé aux membres Premium.' });
+    const messages = Array.isArray(req.body.messages) ? req.body.messages.slice(-12)
+      : (req.body.question ? [{ role: 'user', content: String(req.body.question).slice(0, 4000) }] : []);
+    if (!messages.length) return res.status(400).json({ error: 'BAD_INPUT', message: 'Écris un message.' });
+    const d = getDb();
+    const limit = Number(process.env.COACH_DAILY_LIMIT || 200);
+    const day = new Date().toISOString().slice(0, 10);
+    d.prepare('INSERT INTO coach_usage (user_id, day, count) VALUES (?, ?, 1) ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1').run(req.user.id, day);
+    const used = d.prepare('SELECT count FROM coach_usage WHERE user_id = ? AND day = ?').get(req.user.id, day).count;
+    if (used > limit) return res.status(429).json({ error: 'COACH_QUOTA', message: `Limite quotidienne du Coach atteinte (${limit} messages).`, quota: { used, limit } });
+    const reply = await askCoach(req.user, messages, { premium: true, context: { subjectId: req.body.subjectId || null, chapter: req.body.chapter || null } });
+    res.json({ reply, quota: { used, limit } });
+  });
+
+  // ---------- Vidéo IA : jobs (états pending/processing/completed/failed) ----------
+  app.post('/api/ai/video', requireAuth, requireVerified, rateLimit(20, 60000), async (req, res) => {
+    if (!isPremium(req.user)) return res.status(402).json({ error: 'PREMIUM_REQUIRED', message: 'La Vidéo IA est une fonctionnalité Premium.' });
+    const query = String(req.body.query || req.body.input || '').slice(0, 300);
+    if (!query.trim()) return res.status(400).json({ error: 'BAD_INPUT', message: 'Décris le cours ou la notion.' });
+    const d = getDb();
+    const limit = Number(process.env.VIDEO_DAILY_LIMIT || 60);
+    const day = new Date().toISOString().slice(0, 10);
+    d.prepare('INSERT INTO video_usage (user_id, day, count) VALUES (?, ?, 1) ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1').run(req.user.id, day);
+    const used = d.prepare('SELECT count FROM video_usage WHERE user_id = ? AND day = ?').get(req.user.id, day).count;
+    if (used > limit) return res.status(429).json({ error: 'VIDEO_QUOTA', message: `Limite quotidienne de Vidéo IA atteinte (${limit}).`, quota: { used, limit } });
+    const analysis = analyzeVideoRequest(req.user, query, { premium: true });
+    if (analysis.status !== 'ok') return res.json({ analysis, job: null, notice: analysis.justification, quota: { used, limit } });
+    let job = createVideoJob(req.user, { query, curriculumId: analysis.course?.curriculumId || null });
+    if (job && job.status === 'pending') job = await submitVideoJob(req.user, job);
+    res.status(201).json({ analysis, job, quota: { used, limit }, provider: config.video.configured ? 'configured' : 'none' });
+  });
+  app.get('/api/ai/videos', requireAuth, (req, res) => {
+    if (!isPremium(req.user)) return res.status(402).json({ error: 'PREMIUM_REQUIRED', message: 'La Vidéo IA est une fonctionnalité Premium.' });
+    res.json({ jobs: listVideoJobs(req.user, req.query.limit) });
+  });
+  app.get('/api/ai/video/:id', requireAuth, async (req, res) => {
+    if (!isPremium(req.user)) return res.status(402).json({ error: 'PREMIUM_REQUIRED', message: 'La Vidéo IA est une fonctionnalité Premium.' });
+    const job = await refreshVideoJob(req.user, Number(req.params.id));
+    if (!job) return res.status(404).json({ error: 'NOT_FOUND', message: 'Job vidéo introuvable.' });
+    res.json({ job });
+  });
   app.get('/api/search', (req, res) => {
     const user = getUserFromReq(req);
     res.json(globalSearch(user, req.query.q, { subject: req.query.subject, difficulty: req.query.difficulty, type: req.query.type, premium: isPremium(user), limit: req.query.limit }));
@@ -1447,10 +1564,12 @@ export function createApp() {
   app.get('/api/admin/diagnostics', requireAdmin, (req, res) => {
     const d = getDb();
     res.json({
-      mail: { provider: emailProvider(), configured: emailConfigured() },
-      stripe: { secretConfigured: stripeConfigured(), webhookSecretConfigured: !!process.env.STRIPE_WEBHOOK_SECRET, mode: process.env.STRIPE_MODE || 'both' },
+      mail: { provider: emailProvider(), configured: emailConfigured(), warnings: validateEmailProvider() },
+      stripe: { secretConfigured: stripeConfigured(), webhookSecretConfigured: !!process.env.STRIPE_WEBHOOK_SECRET, mode: config.stripe.mode },
       youtube: { configured: youtubeConfigured() },
-      llm: { studyConfigured: !!(process.env.LLM_API_URL && process.env.LLM_API_KEY), videoAiConfigured: !!process.env.VIDEO_AI_API_KEY },
+      llm: { studyConfigured: config.ai.configured, videoAiConfigured: config.video.configured, baseRejected: config.ai.baseRejected },
+      config: safeSummary(),
+      configIssues: validateConfig(),
       counts: {
         unverifiedUsers: d.prepare('SELECT COUNT(*) AS c FROM users WHERE email_verified = 0 AND is_guest = 0 AND deleted_at IS NULL').get().c,
         pendingReports: d.prepare("SELECT COUNT(*) AS c FROM reports WHERE status = 'open'").get().c,

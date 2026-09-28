@@ -973,4 +973,64 @@ export async function run({ base, assert }) {
   assert(fieldIds.length >= 8 && fieldIds.every((i) => labels.some((l) => i.includes(`"${l}"`))), 'formulaires : chaque champ principal a un label associé');
   assert(/:focus-visible/.test(css) && /prefers-reduced-motion/.test(css), 'CSS : focus visible et respect de « reduced motion »');
   assert(/aria-live/.test(apiJs), 'les notifications toast sont annoncées aux lecteurs d’écran');
+
+  console.log('— audit : secrets, configuration, OpenAI, e-mail, cours, vidéo —');
+  const cfgMod = await import('../../src/config.js');
+  assert(cfgMod.getAppOrigin({ headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'reviqo.app' }, protocol: 'http', get: () => 'reviqo.app' }) === 'https://reviqo.app', 'getAppOrigin utilise les en-têtes de proxy');
+  assert(cfgMod.getAppOrigin({ headers: { host: 'localhost:3000' }, protocol: 'http', get: () => 'localhost:3000' }) === 'http://localhost:3000', 'getAppOrigin déduit l’origine locale');
+  assert(cfgMod.normalizeOpenAiBase('https://platform.openai.com/api-keys') === '', 'une page de gestion OpenAI est rejetée comme endpoint');
+  assert(cfgMod.normalizeOpenAiBase('https://api.openai.com') === 'https://api.openai.com/v1', 'base OpenAI normalisée en /v1');
+  assert(cfgMod.config.google.redirectUri('https://x.app') === 'https://x.app/api/auth/google/callback', 'redirect URI Google centralisée');
+  assert(typeof cfgMod.validateConfig().ok === 'boolean' && Array.isArray(cfgMod.validateConfig().errors), 'validation de configuration au démarrage');
+
+  const envMod = await import('../../src/env.js');
+  const envParsed = envMod.parseEnv('RESEND_API_KEY=re_abc123   \nMAIL_FROM_EMAIL="no-reply@reviqo.app"\nexport JWT_SECRET=abc\r\n');
+  assert(envParsed.RESEND_API_KEY === 're_abc123' && envParsed.MAIL_FROM_EMAIL === 'no-reply@reviqo.app' && envParsed.JWT_SECRET === 'abc', 'lecture .env robuste (espaces, guillemets, export, retours)');
+  assert(envMod.parseEnv('RESEND_API_KEY="re_abc\ndef"\n').RESEND_API_KEY === 're_abcdef', 'clé collée sur plusieurs lignes recollée en une seule chaîne');
+
+  const pubDir = nodePath.join(rootDir, 'public');
+  const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(nodePath.join(dir, e.name)) : [nodePath.join(dir, e.name)]));
+  const frontFiles = walk(pubDir).filter((f) => /\.(js|html)$/.test(f));
+  const leaked = frontFiles.filter((f) => /(process\.env|sk-[A-Za-z0-9]{10,}|re_[A-Za-z0-9]{10,}|AIza[0-9A-Za-z_-]{10,}|whsec_)/.test(fs.readFileSync(f, 'utf8')));
+  assert(leaked.length === 0, 'aucun secret ni process.env dans le frontend');
+  const direct = frontFiles.filter((f) => /fetch\(\s*['"]https?:\/\/(api\.openai|generativelanguage|api\.resend|api\.stripe|oauth2\.googleapis)/.test(fs.readFileSync(f, 'utf8')));
+  assert(direct.length === 0, 'aucun appel direct aux fournisseurs depuis le navigateur');
+
+  const gres = await fetch(`${base}/api/auth/google`, { redirect: 'manual' });
+  assert(gres.status >= 300 && gres.status < 400 && (gres.headers.get('location') || '').includes('google_not_configured'), 'Google non configuré → redirection explicite');
+
+  assert((await req('/api/ai/coach', { method: 'POST', body: { question: 'Bonjour' }, session: freeCoach })).status === 402, '/api/ai/coach réservé au premium');
+  const aiCoach = await req('/api/ai/coach', { method: 'POST', body: { question: 'Explique les fractions', chapter: 'Nombres' }, session: six });
+  assert(aiCoach.status === 200 && aiCoach.data.reply && Array.isArray(aiCoach.data.reply.sources), '/api/ai/coach renvoie une réponse sourcée (clé jamais côté navigateur)');
+
+  const evA = jar();
+  const evSignup = await req('/api/auth/signup', { method: 'POST', body: { email: 'veriflink@example.com', password: 'secret123', username: 'VerifLink' }, session: evA });
+  assert(typeof evSignup.data.devVerificationLink === 'string' && evSignup.data.devVerificationLink.includes('/api/auth/verify-email?'), 'lien de vérification généré');
+  const linkParams = new URL(`http://x${evSignup.data.devVerificationLink}`).searchParams;
+  const evTok = linkParams.get('token');
+  const vOk = await req(`/api/auth/verify-email?email=${encodeURIComponent('veriflink@example.com')}&token=${encodeURIComponent(evTok)}&format=json`, { session: evA });
+  assert(vOk.status === 200 && vOk.data.ok === true, 'vérification par lien (token) réussie');
+  assert((await req(`/api/auth/verify-email?email=${encodeURIComponent('veriflink@example.com')}&token=${encodeURIComponent(evTok)}&format=json`)).data.alreadyVerified === true, 'token de vérification à usage unique');
+  const evB = jar();
+  await req('/api/auth/signup', { method: 'POST', body: { email: 'verifbad@example.com', password: 'secret123', username: 'VerifBad' }, session: evB });
+  assert((await req('/api/auth/verify-email?email=verifbad%40example.com&token=invalide&format=json')).status === 400, 'token de vérification invalide refusé');
+  assert((await req('/api/auth/send-verification', { method: 'POST', body: { email: 'nobody@nowhere.tld' } })).data.ok === true, 'send-verification ne révèle pas l’existence d’un compte');
+
+  const coursesMod = await import('../../src/courses.js');
+  assert(coursesMod.fingerprint({ title: 'Fractions simples', subjectSlug: 'maths', curriculumId: 1, chapter: 'Fractions' })
+    === coursesMod.fingerprint({ title: '  fractions   SIMPLES ', subjectSlug: 'maths', curriculumId: 1, chapter: 'fractions' }), 'empreinte de cours stable (anti-doublon)');
+  const curveSix = (await req('/api/curriculum', { session: six })).data.curriculum;
+  const curveTrois = (await req('/api/curriculum', { session: trois })).data.curriculum;
+  getDbT().prepare("INSERT INTO courses (curriculum_id, subject_id, level, grade, title, chapter, summary, sections, status, source, fingerprint) VALUES (?, 1, 'college', '6eme', 'Cours test 6ème', 'Fractions', 'résumé', '[{\"heading\":\"h\",\"content\":\"c\"}]', 'published', 'manual', 'fp-six-test')").run(curveSix.id);
+  getDbT().prepare("INSERT INTO courses (curriculum_id, subject_id, level, grade, title, chapter, summary, sections, status, source, fingerprint) VALUES (?, 1, 'college', '3eme', 'Cours test 3ème', 'Thalès', 'résumé', '[{\"heading\":\"h\",\"content\":\"c\"}]', 'published', 'manual', 'fp-trois-test')").run(curveTrois.id);
+  const sixCourses = await req('/api/courses', { session: six });
+  assert(sixCourses.data.courses.some((c) => c.title === 'Cours test 6ème') && !sixCourses.data.courses.some((c) => c.title === 'Cours test 3ème'), 'cours strictement filtrés par programme (6ème ≠ 3ème)');
+  const aiCourse = await req('/api/ai/courses', { method: 'POST', body: { subject: 'maths', chapter: 'Fractions' }, session: six });
+  assert(aiCourse.status === 503 && aiCourse.data.error === 'AI_NOT_CONFIGURED', 'génération de cours sans clé IA : erreur explicite (jamais simulée)');
+
+  const vjob = await req('/api/ai/video', { method: 'POST', body: { query: 'les fractions simples' }, session: six });
+  assert(vjob.status === 201 && vjob.data.job && vjob.data.job.status === 'failed' && vjob.data.provider === 'none', 'vidéo IA : job honnêtement « failed » sans fournisseur configuré');
+  assert((await req(`/api/ai/video/${vjob.data.job.id}`, { session: six })).data.job.id === vjob.data.job.id, 'état du job vidéo consultable (polling)');
+  assert((await req(`/api/ai/video/${vjob.data.job.id}`, { session: freeCoach })).status === 402, 'vidéo IA réservée au premium');
+  assert((await req(`/api/ai/video/${vjob.data.job.id}`, { session: trois })).status === 404, 'un job vidéo n’est pas accessible à un autre compte');
 }
