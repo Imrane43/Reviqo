@@ -1033,4 +1033,42 @@ export async function run({ base, assert }) {
   assert((await req(`/api/ai/video/${vjob.data.job.id}`, { session: six })).data.job.id === vjob.data.job.id, 'état du job vidéo consultable (polling)');
   assert((await req(`/api/ai/video/${vjob.data.job.id}`, { session: freeCoach })).status === 402, 'vidéo IA réservée au premium');
   assert((await req(`/api/ai/video/${vjob.data.job.id}`, { session: trois })).status === 404, 'un job vidéo n’est pas accessible à un autre compte');
+
+  console.log('— cours réels par profil (sans IA) —');
+  const seedCount = getDbT().prepare('SELECT COUNT(*) AS c FROM courses').get().c;
+  assert(seedCount >= 20, `cours réels en base (${seedCount})`);
+  const dups = getDbT().prepare('SELECT curriculum_id, title, COUNT(*) AS c FROM courses GROUP BY curriculum_id, title HAVING c > 1').all();
+  assert(dups.length === 0, 'aucun cours dupliqué (seed idempotent via empreinte unique)');
+
+  const coursesSix = (await req('/api/courses', { session: six })).data.courses;
+  assert(coursesSix.length >= 2 && coursesSix.some((c) => /^6ème · /.test(c.title)), '6ème : cours de 6ème servis sans IA');
+  assert(!coursesSix.some((c) => /^3ème · /.test(c.title)), '6ème : aucun cours de 3ème servi (filtrage strict)');
+  const courseSample = coursesSix.find((c) => /^6ème · /.test(c.title));
+  assert(courseSample.sections.length > 0 && courseSample.quiz.length > 0 && !!courseSample.summary && courseSample.flashcards.length > 0 && !!courseSample.objective, 'cours complet (objectif, sections, quiz, résumé, flashcards)');
+  assert(coursesSix.every((c) => !c.specialties.length), 'cours de collège sans spécialité (valables pour tous)');
+
+  const coursesTrois = (await req('/api/courses', { session: trois })).data.courses;
+  assert(coursesTrois.some((c) => /^3ème · /.test(c.title)) && !coursesTrois.some((c) => /^6ème · /.test(c.title)), '3ème : cours de 3ème uniquement (6ème ≠ 3ème)');
+
+  const premNSI = jar(); const premNo = jar();
+  await req('/api/auth/signup', { method: 'POST', body: { email: 'premnsi@example.com', password: 'secret123', username: 'PremNSI' }, session: premNSI });
+  await req('/api/auth/onboarding', { method: 'POST', body: { firstName: 'PremNSI', schoolLevel: 'Lycée', country: 'France', grade: '1ere', track: 'general', specialties: ['NSI', 'Mathématiques'], subjects: [1], goal: 'Bac' }, session: premNSI });
+  await req('/api/auth/signup', { method: 'POST', body: { email: 'premno@example.com', password: 'secret123', username: 'PremNo' }, session: premNo });
+  await req('/api/auth/onboarding', { method: 'POST', body: { firstName: 'PremNo', schoolLevel: 'Lycée', country: 'France', grade: '1ere', track: 'general', subjects: [1], goal: 'Bac' }, session: premNo });
+  const withNsi = (await req('/api/courses', { session: premNSI })).data.courses;
+  const withoutNsi = (await req('/api/courses', { session: premNo })).data.courses;
+  assert(withNsi.some((c) => /NSI/.test(c.title)), 'Première générale avec NSI : cours de spécialité servi');
+  assert(!withoutNsi.some((c) => /NSI/.test(c.title)), 'Première générale sans NSI : cours de spécialité NON servi');
+  assert(withoutNsi.some((c) => /Équations du second degré/.test(c.title)), 'Première générale : tronc commun servi');
+  assert(withNsi.every((c) => c.curriculumId === withoutNsi[0].curriculumId), 'cours filtrés sur le même programme (Première générale)');
+
+  const techno = jar();
+  await req('/api/auth/signup', { method: 'POST', body: { email: 'premtechno@example.com', password: 'secret123', username: 'PremTechno' }, session: techno });
+  await req('/api/auth/onboarding', { method: 'POST', body: { firstName: 'PremTechno', schoolLevel: 'Lycée', country: 'France', grade: '1ere', track: 'techno', subjects: [1], goal: 'Bac' }, session: techno });
+  const technoCourses = (await req('/api/courses', { session: techno })).data.courses;
+  assert(technoCourses.some((c) => /technologique/.test(c.title)) && !technoCourses.some((c) => /générale/.test(c.title)), 'Première technologique : contenu propre à la voie (≠ générale)');
+
+  await req('/api/quizzes/1/attempt', { method: 'POST', body: { answers: [] }, session: premNSI });
+  const anonCourses = await req('/api/courses');
+  assert(anonCourses.data.courses.length === 0 && !!anonCourses.data.notice, 'sans profil scolaire : aucun cours servi, message explicite');
 }

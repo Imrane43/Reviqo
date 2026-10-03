@@ -529,10 +529,11 @@ export function createApp() {
     const systemLevel = req.body.systemLevel || (countryInfo ? genericLevelToSystem(schoolLevel, countryInfo.system) : null);
     d.prepare(`UPDATE users SET first_name = COALESCE(?, first_name), username = COALESCE(?, username), username_norm = COALESCE(?, username_norm),
       school_level = ?, country = ?, subjects = ?, goal = ?, system = ?, system_level = ?, grade = ?, track = ?, domain = ?, domain_detail = ?,
-      learning_language = ?, exam_session = ?, school_year = ?, exam_date = ?, onboarding_done = 1 WHERE id = ?`)
+      learning_language = ?, exam_session = ?, school_year = ?, exam_date = ?, specialties = COALESCE(?, specialties), onboarding_done = 1 WHERE id = ?`)
       .run(firstName || null, uname, ukey, schoolLevel || null, country || null, JSON.stringify(subjects || []), goal || null,
         countryInfo?.system || null, systemLevel, req.body.grade || null, req.body.track || null, req.body.domain || null, req.body.domainDetail || null,
-        req.body.learningLanguage || null, req.body.examSession || null, req.body.schoolYear || null, req.body.examDate || null, req.user.id);
+        req.body.learningLanguage || null, req.body.examSession || null, req.body.schoolYear || null, req.body.examDate || null,
+        req.body.specialties ? JSON.stringify(req.body.specialties) : null, req.user.id);
     recomputeCurriculum(d, req.user.id);
     const user = d.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
     res.json({

@@ -282,10 +282,27 @@ Voir `docs/AUDIT-2026-09.md`. Points clés :
 - **Cours** : filtrage strict par programme/spécialités, `GET /api/courses`, `POST /api/ai/courses`,
   **anti-doublon** par empreinte unique + similarité de titre.
 
+## Cours réels par profil (sans IA)
+
+La table `courses` est **seedée** (`src/seed-courses.js`, 23 cours) : servis par `GET /api/courses`
+**sans aucune clé IA**, et **distincts** par classe, voie et spécialité.
+
+- **Collège** : 6ᵉ (décimaux, fractions · classes de mots, présent), 5ᵉ (relatifs, proportionnalité ·
+récit/imparfait), 4ᵉ (Pythagore, puissances · phrase complexe), 3ᵉ (Thalès, calcul littéral ·
+subordonnées, Brevet).
+- **Lycée** : 2ⁿᵈᵉ (fonctions · texte argumentatif), 1ʳᵉ **générale** (second degré · commentaire ·
+**NSI** boucles/fonctions) et 1ʳᵉ **technologique** (pourcentages), Terminale **générale** (dérivation ·
+philosophie · **NSI** listes/dictionnaires).
+- **Spécialités** : un cours tagué `NSI` n'est servi que si l'élève a NSI (une 1ʳᵉ générale sans NSI
+ne le reçoit pas). Les spécialités sont persistées à l'onboarding.
+- Chaque cours est complet : objectif, prérequis, sections, exemples, méthode, erreurs fréquentes,
+exercice + correction, quiz, résumé, flashcards.
+- Seed **idempotent** (empreinte unique → aucun doublon, y compris avec la génération IA).
+
 ## Tests
 
 ```bash
-npm test        # 352 assertions (suite API hermétique, clés externes vides)
+npm test        # 365 assertions (suite API hermétique, clés externes vides)
 npm run check   # garde-fou de déploiement
 npm run e2e     # parcours navigateur Playwright
 ```

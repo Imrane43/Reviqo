@@ -6,6 +6,8 @@ import fs from 'node:fs';
 import { EXTRA_QUIZZES, FLASHCARD_DECKS } from './seed-content.js';
 import { listCurricula } from './programs.js';
 import { GRADED_QUIZZES, GRADED_DECKS } from './content-library.js';
+import { COURSE_SEED } from './seed-courses.js';
+import { fingerprint } from './fingerprint.js';
 
 export const LEVELS = [
   { level: 1, xp: 0 },
@@ -653,6 +655,7 @@ export function initDb(dbPath) {
   seedBase();
   seedCurricula();
   seedContentLibrary();
+  seedCourses();
   cleanupUnverified();
   if (file !== ':memory:') {
     const timer = setInterval(cleanupUnverified, 3600 * 1000);
@@ -895,6 +898,33 @@ export function findCurriculum({ countryCode, level, grade = '', track = '', dom
 export function getCurriculumById(id) {
   if (!id) return null;
   return getDb().prepare('SELECT * FROM curricula WHERE id = ?').get(id) || null;
+}
+
+/**
+ * Seed idempotent des cours réels par profil (table `courses`).
+ * L'empreinte unique empêche tout doublon avec la génération IA ou un autre seed.
+ */
+function seedCourses() {
+  const d = getDb();
+  const getSub = d.prepare('SELECT id FROM subjects WHERE slug = ?');
+  const ins = d.prepare(`INSERT OR IGNORE INTO courses
+    (curriculum_id, subject_id, level, grade, track, specialties, chapter, title, objective, prerequisites, sections,
+     examples, method, common_mistakes, exercise, correction, quiz, summary, flashcards, difficulty, language, fingerprint, source, status, version)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`);
+  for (const c of COURSE_SEED) {
+    const sub = getSub.get(c.subject);
+    if (!sub) continue;
+    const cur = findCurriculum({ countryCode: c.countryCode, level: c.level, grade: c.grade || '', track: c.track || '', domain: c.domain || '' });
+    if (!cur) continue;
+    const fp = fingerprint({ title: c.title, subjectSlug: c.subject, curriculumId: cur.id, chapter: c.chapter });
+    ins.run(
+      cur.id, sub.id, c.level, c.grade || '', c.track || '', JSON.stringify(c.specialties || []), c.chapter || '', c.title,
+      c.objective || '', JSON.stringify(c.prerequisites || []), JSON.stringify(c.sections || []), JSON.stringify(c.examples || []),
+      c.method || '', JSON.stringify(c.commonMistakes || []), c.exercise || '', c.correction || '',
+      JSON.stringify(c.quiz || []), c.summary || '', JSON.stringify(c.flashcards || []), c.difficulty || 'medium',
+      c.language || 'fr', fp, c.source || 'seed', c.status || 'published',
+    );
+  }
 }
 
 function seedDemoActivity() {

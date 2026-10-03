@@ -325,6 +325,20 @@ API (UI minimale à finaliser à l’étape 12 si besoin).
 
 ---
 
+## ✅ Cours réels par profil (sans IA)
+
+- `src/seed-courses.js` : **23 cours** structurés (objectif, prérequis, sections, exemples, méthode,
+erreurs fréquentes, exercice + correction, quiz, résumé, flashcards).
+- **Collège** 6ᵉ/5ᵉ/4ᵉ/3ᵉ (maths + français) et **lycée** 2ⁿᵈᵉ, 1ʳᵉ générale/technologique, Terminale
+générale — distincts par classe et par voie.
+- **Spécialité NSI** : cours servi uniquement aux élèves ayant NSI (1ʳᵉ et Terminale générale).
+- `GET /api/courses` sert ces cours **sans dépendre de l'IA** ; seed **idempotent** via empreinte unique
+(partagée avec la génération IA → aucun doublon).
+- Les **spécialités** sont désormais persistées à l'onboarding.
+- Testé : 6ᵉ ≠ 3ᵉ, 3ᵉ ≠ 6ᵉ, avec/sans NSI, voie technologique ≠ générale, structure complète, aucun doublon.
+
+---
+
 ## 🔎 Audit & correctifs (demande utilisateur)
 
 - **Secrets** : aucun secret/frontend, aucun appel direct aux fournisseurs depuis le navigateur — vérifié automatiquement.
@@ -341,7 +355,7 @@ API (UI minimale à finaliser à l’étape 12 si besoin).
 
 ## Tests
 
-- `npm test` → **352/352** assertions (95 d'origine + étapes 2 à 12 + audit).
+- `npm test` → **365/365** assertions (95 d'origine + étapes 2 à 12 + audit + cours par profil).
 - `npm run check` → garde-fou anti-régression de déploiement (modules front-end jamais dans `src/`).
 - `npm run e2e` → parcours navigateur Playwright (nécessite les navigateurs).
 

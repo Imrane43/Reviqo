@@ -10,38 +10,16 @@
  * l'empreinte (fingerprint) et la similarité des titres ; en cas de doublon on
  * demande une variante réellement différente.
  */
-import crypto from 'node:crypto';
 import { getDb } from './db.js';
 import { config } from './config.js';
 import { chatCompletionJson } from './openai.js';
 import { effectiveCurriculum } from './retrieval.js';
 import { subjectsFromCurriculum } from './programs.js';
+import { normalizeText, fingerprint, similarity } from './fingerprint.js';
+
+export { normalizeText, fingerprint, similarity };
 
 export const COURSE_STATUSES = ['draft', 'to_validate', 'published', 'archived'];
-
-export function normalizeText(value) {
-  return String(value ?? '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
-}
-
-export function fingerprint({ title, subjectSlug, curriculumId, chapter }) {
-  return crypto.createHash('sha256')
-    .update([normalizeText(title), subjectSlug || '', curriculumId ?? '', normalizeText(chapter)].join('|'))
-    .digest('hex');
-}
-
-export function similarity(a, b) {
-  const A = new Set(normalizeText(a).split(' ').filter(Boolean));
-  const B = new Set(normalizeText(b).split(' ').filter(Boolean));
-  if (!A.size || !B.size) return 0;
-  let inter = 0;
-  for (const w of A) if (B.has(w)) inter += 1;
-  return inter / (A.size + B.size - inter);
-}
 
 /** Cherche un cours identique (empreinte) ou très proche (similarité ≥ 0.8). */
 export function findSimilarCourse(d, { curriculumId, subjectId, fingerprint: fp, title }) {
